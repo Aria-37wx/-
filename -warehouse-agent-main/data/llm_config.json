@@ -1,5 +1,0 @@
-{
-  "api_key": "$env:DEEPSEEK_API_KEY='sk-90364fb3438f4f4da5df087885860626'",
-  "base_url": "https://api.deepseek.com",
-  "model": "deepseek-chat"
-}

@@ -636,28 +636,46 @@ elif page == "入库":
             st.rerun()
 
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            name = st.text_input("物料名称", placeholder="如：STM32F407 开发板")
-            category = st.selectbox("大类", CATEGORY_NAMES)
-            sub_category = st.selectbox("子类", get_category_subs(category))
-            model = st.text_input("型号", placeholder="如：STM32F407")
+        # 标签数据提前加载（在所有行之前只查一次）
+        conn = get_db()
+        try:
+            all_tags = [r["name"] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()]
+        finally:
+            conn.close()
 
-        with col2:
-            is_consumable = st.checkbox("耗材（如焊锡丝、热缩管）")
-            quantity = st.number_input("数量", min_value=1, value=1, step=1,
-                                       help="非耗材每件独立编号，耗材合并数量")
+        # ---- 第 1 行：物料名称 | 耗材 + 数量 ----
+        r1_left, r1_right = st.columns(2)
+        with r1_left:
+            name = st.text_input("物料名称", placeholder="如：STM32F407 开发板")
+        with r1_right:
+            _rc1, _rc2 = st.columns([1, 2])
+            with _rc1:
+                is_consumable = st.checkbox("耗材", help="如焊锡丝、热缩管等按总量管理；非耗材每件独立编号。")
+            with _rc2:
+                quantity = st.number_input("数量", min_value=1, value=1, step=1,
+                                           help="非耗材每件独立编号，耗材合并数量")
+
+        # ---- 第 2 行：大类 | 存放位置 ----
+        r2_left, r2_right = st.columns(2)
+        with r2_left:
+            category = st.selectbox("大类", CATEGORY_NAMES)
+        with r2_right:
             location = st.text_input("存放位置", placeholder="如：柜A-1")
 
-            # 标签选择
-            conn = get_db()
-            try:
-                all_tags = [r["name"] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()]
-            finally:
-                conn.close()
+        # ---- 第 3 行：子类 | 标签（可选） ----
+        r3_left, r3_right = st.columns(2)
+        with r3_left:
+            sub_category = st.selectbox("子类", get_category_subs(category))
+        with r3_right:
             selected_tags = st.multiselect("标签（可选）", all_tags,
                                            help="选择已有标签或下方输入新标签名，入库时自动关联"
                                                    "。标签描述在「标签管理」页面查看。")
+
+        # ---- 第 4 行：型号 | 新增标签 ----
+        r4_left, r4_right = st.columns(2)
+        with r4_left:
+            model = st.text_input("型号", placeholder="如：STM32F407")
+        with r4_right:
             new_tags = st.text_input("新增标签（逗号分隔）",
                                      placeholder="如：IoT开发板, 教学常用",
                                      help="输入新标签名，入库时自动创建。标签描述可在「标签管理」页补充。")

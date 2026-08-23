@@ -858,15 +858,19 @@ elif page == "归还":
 elif page == "记录查询":
     st.header("出库记录查询")
 
-    rec_view = st.radio("记录类型", ["借还记录", "领用记录"], horizontal=True)
+    # 头部一行：记录类型 + 筛选开关（把「仅显示借出中」挪到顶部和类型同一行）
+    rec_head_left, rec_head_right = st.columns([3, 1])
+    with rec_head_left:
+        rec_view = st.radio("记录类型", ["借还记录", "领用记录"], horizontal=True)
+    with rec_head_right:
+        only_active = False
+        if rec_view == "借还记录":
+            only_active = st.checkbox("仅显示借出中", value=False)
 
     if rec_view == "借还记录":
-        col1, col2 = st.columns(2)
-        with col1:
-            filter_phone = st.text_input("按手机号筛选", placeholder="留空查看全部",
-                                         key="rec_filter_phone_borrow")
-        with col2:
-            only_active = st.checkbox("仅显示借出中")
+        # 手机号输入框：全宽，与领用记录样式一致
+        filter_phone = st.text_input("按手机号筛选", placeholder="留空查看全部",
+                                     key="rec_filter_phone_borrow")
 
         result = get_borrow_records(
             user_phone=filter_phone.strip(),
@@ -877,7 +881,7 @@ elif page == "记录查询":
         else:
             st.text(result)
     else:
-        # 领用记录（永久出库，不归还）
+        # 领用记录（永久出库，不归还）—— 手机号输入框保持全宽样式
         filter_phone = st.text_input("按手机号筛选", placeholder="留空查看全部",
                                      key="rec_filter_phone_consume")
         conn = get_db()

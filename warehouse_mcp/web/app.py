@@ -643,42 +643,45 @@ elif page == "入库":
         finally:
             conn.close()
 
-        # ---- 第 1 行：物料名称 | 耗材 + 数量 ----
+        # ---- 第 1 行：物料名称 | 存放位置 ----
         r1_left, r1_right = st.columns(2)
         with r1_left:
             name = st.text_input("物料名称", placeholder="如：STM32F407 开发板")
         with r1_right:
-            _rc1, _rc2 = st.columns([1, 2])
-            with _rc1:
-                is_consumable = st.checkbox("耗材", help="如焊锡丝、热缩管等按总量管理；非耗材每件独立编号。")
-            with _rc2:
-                quantity = st.number_input("数量", min_value=1, value=1, step=1,
-                                           help="非耗材每件独立编号，耗材合并数量")
+            location = st.text_input("存放位置", placeholder="如：柜A-1")
 
-        # ---- 第 2 行：大类 | 存放位置 ----
+        # ---- 第 2 行：大类 | 子类 ----
         r2_left, r2_right = st.columns(2)
         with r2_left:
             category = st.selectbox("大类", CATEGORY_NAMES)
         with r2_right:
-            location = st.text_input("存放位置", placeholder="如：柜A-1")
+            sub_category = st.selectbox("子类", get_category_subs(category))
 
-        # ---- 第 3 行：子类 | 标签（可选） ----
+        # ---- 第 3 行：型号 | 数量 ----
         r3_left, r3_right = st.columns(2)
         with r3_left:
-            sub_category = st.selectbox("子类", get_category_subs(category))
+            model = st.text_input("型号", placeholder="如：STM32F407")
         with r3_right:
+            quantity = st.number_input("数量", min_value=1, value=1, step=1,
+                                       help="非耗材每件独立编号，耗材合并数量")
+
+        # ---- 第 4 行：标签（可选） | 新增标签 ----
+        r4_left, r4_right = st.columns(2)
+        with r4_left:
             selected_tags = st.multiselect("标签（可选）", all_tags,
                                            help="选择已有标签或下方输入新标签名，入库时自动关联"
                                                    "。标签描述在「标签管理」页面查看。")
-
-        # ---- 第 4 行：型号 | 新增标签 ----
-        r4_left, r4_right = st.columns(2)
-        with r4_left:
-            model = st.text_input("型号", placeholder="如：STM32F407")
         with r4_right:
             new_tags = st.text_input("新增标签（逗号分隔）",
                                      placeholder="如：IoT开发板, 教学常用",
                                      help="输入新标签名，入库时自动创建。标签描述可在「标签管理」页补充。")
+
+        # ---- 元选项：是否为耗材（放在表单末尾，提交按钮之前，不打断对齐网格） ----
+        is_consumable = st.checkbox(
+            "标记为耗材",
+            value=False,
+            help="勾选后按总量管理（如焊锡丝、热缩管）；不勾选则每件物料独立编号。"
+        )
 
         if st.button("入库确认", type="primary", use_container_width=True):
             if not name.strip():

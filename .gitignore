@@ -1,5 +1,6 @@
-# SQLite 数据库（不提交，本地运行 setup_test_data.py 生成）/ LLM 配置文件（不可提交）
+# SQLite 数据库（提交测试数据，供 clone 后直接使用）/ LLM 配置文件（不可提交，含 API Key）
 data/*
+!data/warehouse.db
 data/llm_config.json
 
 # 二进制赛题文件

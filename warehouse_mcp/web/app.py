@@ -597,15 +597,17 @@ elif page == "AI 对话":
                 s = result["summary"]
                 st.markdown(
                     f"项目：**{result.get('project_name') or '（未命名项目）'}**　|　"
-                    f"? 可满足 {s['ok']} 项　?? 部分满足 {s['partial']} 项　? 缺货 {s['missing']} 项"
+                    f"✅ 可满足 {s['ok']} 项　⚠️ 部分满足 {s['partial']} 项　❌ 缺货 {s['missing']} 项"
                 )
+                if result.get("overview"):
+                    st.markdown(f"📋 **项目说明**\n\n{result['overview']}")
                 if result.get("llm_error"):
                     st.info(f"LLM 调用失败，已降级为离线规则（{result['llm_error'][:80]}）")
                 if result.get("dropped"):
                     st.caption("；".join(result["dropped"]))
 
                 # 明细清单
-                status_emoji = {"ok": "?", "partial": "??", "missing": "?"}
+                status_emoji = {"ok": "✅", "partial": "⚠️", "missing": "❌"}
                 status_label = {"ok": "有货", "partial": "部分满足", "missing": "缺货"}
                 for it in result["items"]:
                     optional = "（可选）" if it["necessity"] == "optional" else ""
@@ -613,19 +615,27 @@ elif page == "AI 对话":
                              f"**{it['name']}**{optional} — {it['category']}>{it['sub_category']} "
                              f"| 需 {it['quantity']} 件 | 库存 {it['available_qty']}")
                     with st.expander(title, expanded=(it["status"] != "ok")):
-                        if it["note"]:
-                            st.caption(f"说明：{it['note']}")
+                        # 关键物料解释（作用/原因/备选）
+                        if it.get("role") or it.get("why"):
+                            explain = []
+                            if it.get("role"):
+                                explain.append(f"**作用**：{it['role']}")
+                            if it.get("why"):
+                                explain.append(f"**原因**：{it['why']}")
+                            if it.get("options"):
+                                explain.append(f"**备选**：{it['options']}")
+                            st.markdown("　".join(explain))
                         if it["matched"]:
                             for m in it["matched"][:5]:
                                 st.write(f"· `{m['id']}` {m['name']} | 库存 {m['quantity']} | {m['location'] or '未指定位置'}")
                         if it["shortage"]:
                             st.warning(f"库存不足，还缺 {it['shortage']} 件")
                         if it["alternatives"]:
-                            st.caption("? 同类替代：")
+                            st.caption("💡 同类替代：")
                             for a in it["alternatives"]:
                                 st.write(f"· `{a['id']}` {a['name']}（{a['sub_category']}）库存 {a['quantity']}")
                         elif it["shortage"]:
-                            st.caption("? 无同类替代品，建议采购")
+                            st.caption("💡 无同类替代品，建议采购")
 
         # 批量出库（放在对话气泡外，操作更顺手）
         if result.get("success"):
@@ -641,7 +651,7 @@ elif page == "AI 对话":
                     # 库存充足的项默认勾选；部分满足的项会出完该类剩余库存，默认不勾选
                     if it["status"] == "ok":
                         default_selected.append(label)
-                st.caption("已自动勾选库存充足的项；?? 部分满足的项默认不勾选"
+                st.caption("已自动勾选库存充足的项；⚠️ 部分满足的项默认不勾选"
                            "（勾选后会把该类剩余库存全部出完），需要时手动勾选。")
                 selected = st.multiselect("选择要出库的物料", list(options.keys()),
                                           default=default_selected, key="ai_rec_select")
@@ -1177,7 +1187,7 @@ elif page == "标签管理":
             if t["description"]:
                 st.caption(t["description"])
             else:
-                st.caption("? 暂无描述")
+                st.caption("📝 暂无描述")
         with c2:
             if st.button("编辑描述", key=f"edit_{t['name']}"):
                 st.session_state.edit_tag = t["name"]

@@ -12,32 +12,61 @@
 
 from warehouse_mcp.db.database import get_db, CATEGORIES, get_category_subs
 from warehouse_mcp.llm_client import _extract_json
+from warehouse_mcp.bom_library import search_bom_library, format_bom_refs
 
 
-def _build_project_prompt() -> str:
-    """构建项目物料清单推理的 system prompt"""
+def _build_project_prompt(bom_refs: list = None) -> str:
+    """构建项目物料清单推理的 system prompt。
+
+    Args:
+        bom_refs: 检索到的参考 BOM 列表（可为空），作为参考知识注入。
+    """
     cat_lines = []
     for cat_name, cat_info in CATEGORIES.items():
         subs_str = "、".join(get_category_subs(cat_name))
         cat_lines.append(f"  {cat_name}（代码 {cat_info['code']}）：{subs_str}")
 
-    return f"""你是一个大学生科创实验室的物料管理助手。用户会描述他想做的项目（如"WiFi遥控小车"、"温湿度监测"），你需要推理出完成这个项目所需的物料清单，后续系统会对照库存检查哪些有、哪些缺。
+    bom_section = ""
+    if bom_refs:
+        bom_section = (
+            "\n## 参考 BOM（实验室收集的真实项目物料清单，仅供参考）\n\n"
+            + format_bom_refs(bom_refs)
+            + "\n\n"
+        )
+
+    return f"""你是一个大学生科创实验室的物料管理助手。用户会描述他想做的项目（如"WiFi遥控小车"、"循迹小车"、"机械臂"），你需要推理出完成这个项目所需的物料清单，并给出可理解的说明。后续系统会对照库存检查哪些有、哪些缺。
 
 ## 分类体系
 
 大类及子类如下：
 {chr(10).join(cat_lines)}
 
-## 推理规则
+## 项目类型自判断
+
+科创项目大致分两类，请你自己判断用户的描述更接近哪一种，并据此调整推荐的发散程度：
+- 偏「创新 DIY / 大创 / 自由选题」：顺着「控制核心 → 动力驱动 → 传动结构 → 感知输入 → 交互输出 → 供电 → 连接装配」的设计维度去发散，每个维度尽量给出主推方案 + 备选方案，给用户更多创新选择空间。
+- 偏「竞赛固定题 / 电赛 / 嵌赛 / B类赛标准题」：参考标准 BOM 收敛到成熟可靠的配置，突出必需件，避免添加花哨无关物料。
+
+在 output 的 project_type 字段标注：创新类写 "open"，竞赛固定类写 "competition"。
+
+{bom_section}## 推理规则
 
 1. 只输出完成该项目真正需要的物料，宁缺毋滥；不要为了凑数量添加无关物料（例如只要一块开发板，就不要加面包板、杜邦线、LED 等）；如果只是想要某一件具体物料而非项目，只输出这一项
 2. category 必须是上述 10 个大类的完整中文名称，不能改字
 3. sub_category 必须是该类下子类的完整名称，不能改字
-4. name 写通用物料名称（如"直流减速电机"），不要写具体型号；型号/产品系列建议写在 note 里（如"ESP32 或 STM32 均可"）
+4. name 写通用物料名称（如"直流减速电机"），不要写具体型号；型号/产品系列建议写在 options 里
 5. quantity 是预计需要的件数（整数，≥1）
 6. necessity：required=项目必需，optional=可选/锦上添花
-7. note：一句话说明用途或选型建议
-8. 明显互斥的备选方案（如"ESP32 或 STM32 二选一"）只列 1 项，把备选写进 note，避免重复计数
+7. role：一句话说明该物料在项目里干什么（如"驱动车轮行驶"）
+8. why：一句话说明为什么需要它（如"提供动力，减速箱增大扭矩"）；optional 物料可简短
+9. options：备选型号或方案（如"STM32F1/F4、ESP32 均可"），没有可留空
+10. 明显互斥的备选方案（如"ESP32 或 STM32 二选一"）只列 1 项，把备选写进 options，避免重复计数
+11. 若提供了「参考 BOM」，仅作参考：结合用户的具体需求做调整，允许创新补充，不要逐字照抄
+
+## 可解释说明要求
+
+- overview：用 1~2 段中文，说清楚这个项目的整体构成和大致工作原理（不要列清单，要讲清楚"是什么、怎么工作、由哪几部分协作"）
+- 对 required（必需）物料，role 和 why 要写得清楚具体；对 optional 物料可一句话带过
 
 ## 输出格式
 
@@ -45,21 +74,27 @@ def _build_project_prompt() -> str:
 ```json
 {{
     "project_name": "WiFi遥控小车",
+    "project_type": "open",
+    "overview": "该小车以主控为核心，通过电机驱动板驱动直流减速电机带动车轮行驶，……",
     "items": [
-        {{"name": "直流减速电机", "category": "执行/驱动", "sub_category": "直流电机", "quantity": 4, "necessity": "required", "note": "驱动车轮"}},
-        {{"name": "电机驱动板", "category": "执行/驱动", "sub_category": "电机驱动板", "quantity": 1, "necessity": "required", "note": "L298N 或 TB6612"}},
-        {{"name": "超声波传感器", "category": "传感模块", "sub_category": "距离/位置", "quantity": 1, "necessity": "optional", "note": "避障，可选"}}
+        {{"name": "直流减速电机", "category": "执行/驱动", "sub_category": "直流电机", "quantity": 4, "necessity": "required", "role": "驱动车轮行驶", "why": "提供动力，减速箱增大扭矩", "options": "TT马达、N20 均可"}},
+        {{"name": "超声波传感器", "category": "传感模块", "sub_category": "距离/位置", "quantity": 1, "necessity": "optional", "role": "避障", "why": "", "options": "HC-SR04"}}
     ]
 }}
 ```"""
 
 
-def infer_project(description: str) -> dict:
+def infer_project(description: str, bom_refs: list = None) -> dict:
     """调用 LLM 推理项目所需物料清单（需要配置 API Key）。
 
+    Args:
+        description: 项目需求描述
+        bom_refs: 检索到的参考 BOM 列表（可为空），注入 prompt 作为参考
+
     Returns:
-        dict: {"project_name": str, "items": [{name, category, sub_category,
-               quantity, necessity, note}]}
+        dict: {"project_name": str, "project_type": str, "overview": str,
+               "items": [{name, category, sub_category, quantity, necessity,
+                          role, why, options}]}
 
     Raises:
         RuntimeError: LLM 未配置 API Key
@@ -76,7 +111,7 @@ def infer_project(description: str) -> dict:
     response = client.chat.completions.create(
         model=_model,
         messages=[
-            {"role": "system", "content": _build_project_prompt()},
+            {"role": "system", "content": _build_project_prompt(bom_refs)},
             {"role": "user", "content": description},
         ],
         temperature=0.2,
@@ -95,137 +130,48 @@ def infer_project(description: str) -> dict:
 
     return {
         "project_name": result.get("project_name", ""),
+        "project_type": result.get("project_type", ""),
+        "overview": result.get("overview", ""),
         "items": items,
     }
 
 
 # ---- 离线规则版本 ----
 
-# 预置项目模板：关键词 → 物料清单（保证无 API Key 也能演示）
-_PROJECT_TEMPLATES = [
-    (
-        "智能小车",
-        ["小车", "遥控车", "循迹", "避障", "竞速", "四轮"],
-        [
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "ESP32 或 STM32F4"},
-            {"name": "直流减速电机", "category": "执行/驱动", "sub_category": "直流电机", "quantity": 4, "necessity": "required", "note": "驱动车轮"},
-            {"name": "电机驱动板", "category": "执行/驱动", "sub_category": "电机驱动板", "quantity": 1, "necessity": "required", "note": "L298N 或 TB6612"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 2, "necessity": "required", "note": "18650"},
-            {"name": "超声波传感器", "category": "传感模块", "sub_category": "距离/位置", "quantity": 1, "necessity": "optional", "note": "HC-SR04 避障"},
-            {"name": "小车底盘", "category": "连接/结构", "sub_category": "结构件(支架/底盘/轮子)", "quantity": 1, "necessity": "required", "note": "含轮子"},
-            {"name": "杜邦线", "category": "连接/结构", "sub_category": "导线/排线", "quantity": 1, "necessity": "optional", "note": "连接用"},
-        ],
-    ),
-    (
-        "温湿度监测",
-        ["温湿度", "环境监测", "气象站", "温控", "温度监测", "湿度"],
-        [
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "ESP32 带 WiFi 上报"},
-            {"name": "温湿度传感器", "category": "传感模块", "sub_category": "温度/湿度", "quantity": 1, "necessity": "required", "note": "DHT11 或 DHT22"},
-            {"name": "OLED显示屏", "category": "显示/交互", "sub_category": "OLED/LCD", "quantity": 1, "necessity": "optional", "note": "本地显示"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 1, "necessity": "required", "note": "18650 供电"},
-            {"name": "面包板", "category": "连接/结构", "sub_category": "面包板/洞洞板", "quantity": 1, "necessity": "optional", "note": "搭电路"},
-        ],
-    ),
-    (
-        "蓝牙遥控",
-        ["蓝牙遥控", "蓝牙控制", "手机遥控", "app遥控", "蓝牙小车"],
-        [
-            {"name": "蓝牙模块", "category": "通信模块", "sub_category": "蓝牙", "quantity": 1, "necessity": "required", "note": "HC-05 串口透传"},
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "Arduino 或 STM32"},
-            {"name": "舵机", "category": "执行/驱动", "sub_category": "舵机/伺服", "quantity": 2, "necessity": "optional", "note": "SG90 转向/云台"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 1, "necessity": "required", "note": ""},
-        ],
-    ),
-    (
-        "机械臂",
-        ["机械臂", "机械手", "抓取", "多轴"],
-        [
-            {"name": "舵机", "category": "执行/驱动", "sub_category": "舵机/伺服", "quantity": 4, "necessity": "required", "note": "4 自由度关节"},
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "STM32 或 Arduino"},
-            {"name": "电源适配器", "category": "电源模块", "sub_category": "电源适配器", "quantity": 1, "necessity": "required", "note": "5V 大电流"},
-            {"name": "机械臂支架", "category": "连接/结构", "sub_category": "结构件(支架/底盘/轮子)", "quantity": 1, "necessity": "required", "note": "亚克力或金属"},
-            {"name": "按键", "category": "显示/交互", "sub_category": "按键/旋钮", "quantity": 2, "necessity": "optional", "note": "手动控制"},
-        ],
-    ),
-    (
-        "平衡车",
-        ["平衡车", "自平衡", "两轮", "直立"],
-        [
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "STM32F4 做 PID"},
-            {"name": "姿态传感器", "category": "传感模块", "sub_category": "运动/姿态(IMU)", "quantity": 1, "necessity": "required", "note": "MPU6050"},
-            {"name": "直流减速电机", "category": "执行/驱动", "sub_category": "直流电机", "quantity": 2, "necessity": "required", "note": "带编码器更佳"},
-            {"name": "电机驱动板", "category": "执行/驱动", "sub_category": "电机驱动板", "quantity": 1, "necessity": "required", "note": "TB6612"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 2, "necessity": "required", "note": "18650"},
-        ],
-    ),
-    (
-        "无人机",
-        ["无人机", "四轴", "四旋翼", "飞控", "飞行器"],
-        [
-            {"name": "飞控板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "STM32F4 飞控"},
-            {"name": "姿态传感器", "category": "传感模块", "sub_category": "运动/姿态(IMU)", "quantity": 1, "necessity": "required", "note": "MPU6050"},
-            {"name": "无刷电机", "category": "执行/驱动", "sub_category": "直流电机", "quantity": 4, "necessity": "required", "note": "配螺旋桨"},
-            {"name": "电调", "category": "执行/驱动", "sub_category": "电机驱动板", "quantity": 4, "necessity": "required", "note": "无刷电调"},
-            {"name": "遥控接收机", "category": "通信模块", "sub_category": "射频/NFC", "quantity": 1, "necessity": "required", "note": "配遥控器"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 1, "necessity": "required", "note": "3S 锂电"},
-        ],
-    ),
-    (
-        "智能家居",
-        ["智能家居", "灯控", "远程开关", "继电器", "家居"],
-        [
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": "ESP8266/ESP32 联网"},
-            {"name": "继电器模块", "category": "执行/驱动", "sub_category": "继电器/接触器", "quantity": 2, "necessity": "required", "note": "控制灯具/电器"},
-            {"name": "LED灯", "category": "显示/交互", "sub_category": "LED/数码管", "quantity": 2, "necessity": "optional", "note": "状态指示"},
-            {"name": "电源适配器", "category": "电源模块", "sub_category": "电源适配器", "quantity": 1, "necessity": "required", "note": "5V 供电"},
-        ],
-    ),
-    (
-        "视觉识别",
-        ["视觉", "摄像头", "人脸", "图像识别", "opencv", "机器视觉", "目标检测"],
-        [
-            {"name": "摄像头模块", "category": "传感模块", "sub_category": "光/颜色/图像", "quantity": 1, "necessity": "required", "note": "USB 摄像头或 OV2640"},
-            {"name": "单板计算机", "category": "主控板", "sub_category": "单板机SBC", "quantity": 1, "necessity": "required", "note": "树莓派或 K210 跑 OpenCV"},
-            {"name": "OLED显示屏", "category": "显示/交互", "sub_category": "OLED/LCD", "quantity": 1, "necessity": "optional", "note": "显示识别结果"},
-            {"name": "蜂鸣器", "category": "显示/交互", "sub_category": "蜂鸣器/扬声器", "quantity": 1, "necessity": "optional", "note": "识别成功报警"},
-            {"name": "电源适配器", "category": "电源模块", "sub_category": "电源适配器", "quantity": 1, "necessity": "required", "note": "树莓派 5V 供电"},
-        ],
-    ),
-    (
-        "电子秤",
-        ["电子秤", "称重", "压力", "体重秤"],
-        [
-            {"name": "称重传感器", "category": "传感模块", "sub_category": "其他", "quantity": 1, "necessity": "required", "note": "HX711 + 称重模块"},
-            {"name": "主控开发板", "category": "主控板", "sub_category": "MCU/单片机", "quantity": 1, "necessity": "required", "note": ""},
-            {"name": "OLED显示屏", "category": "显示/交互", "sub_category": "OLED/LCD", "quantity": 1, "necessity": "required", "note": "显示重量"},
-            {"name": "电池", "category": "电源模块", "sub_category": "电池", "quantity": 1, "necessity": "optional", "note": ""},
-        ],
-    ),
-]
-
-
 def infer_project_fake(description: str) -> dict:
-    """离线规则版项目推理（不调用 LLM，内置常见项目模板）。
+    """离线规则版项目推理（不调用 LLM，直接检索内置 BOM 参考库）。
 
-    模板之间按关键词命中数计分，取最高分；未命中的抛 ValueError。
+    按关键词命中数取最相关的 BOM；未命中的抛 ValueError。
     """
-    text = description.lower()
-    best, best_score = None, 0
-    for name, keywords, items in _PROJECT_TEMPLATES:
-        score = sum(1 for kw in keywords if kw.lower() in text)
-        if score > best_score:
-            best, best_score = (name, keywords, items), score
-
-    if best is None:
+    boms = search_bom_library(description, limit=1)
+    if not boms:
         raise ValueError(
             "离线规则无法识别项目类型。请尝试更明确的描述"
-            "（如'智能小车'、'温湿度监测'、'机械臂'、'平衡车'）。"
+            "（如'循迹小车'、'平衡车'、'机械臂'、'无人机'、'温湿度监测'）。"
         )
 
+    bom = boms[0]
+    items = [
+        {
+            "name": it["name"],
+            "category": it["category"],
+            "sub_category": it["sub_category"],
+            "quantity": it["quantity"],
+            "necessity": it["necessity"],
+            "role": it.get("role", ""),
+            "why": it.get("why", ""),
+            "options": it.get("options", ""),
+        }
+        for it in bom["items"]
+    ]
+    scenario = bom.get("scenario", "")
+    project_type = "competition" if ("竞赛" in scenario or "电赛" in scenario) else "open"
+
     return {
-        "project_name": best[0],
-        "items": best[2],
+        "project_name": bom["name"],
+        "project_type": project_type,
+        "overview": bom.get("overview", ""),
+        "items": items,
         "offline": True,
     }
 
@@ -260,7 +206,9 @@ def _normalize_items(items: list) -> tuple:
             "sub_category": sub,
             "quantity": max(qty, 1),
             "necessity": it.get("necessity", "required"),
-            "note": str(it.get("note", "")),
+            "role": str(it.get("role", "")),
+            "why": str(it.get("why", "")),
+            "options": str(it.get("options", "")),
         })
     return valid, dropped
 
@@ -378,13 +326,14 @@ def analyze_project(description: str, use_fake: bool = False) -> dict:
     if not description.strip():
         return {"success": False, "error": "项目描述不能为空。"}
 
-    # 1. LLM（或离线规则）推理物料清单
+    # 1. LLM（或离线规则）推理物料清单（先检索 BOM 参考库作为参考）
+    bom_refs = search_bom_library(description, limit=2)
     llm_error = ""
     try:
         if use_fake:
             inferred = infer_project_fake(description)
         else:
-            inferred = infer_project(description)
+            inferred = infer_project(description, bom_refs)
     except Exception as e:
         # LLM 未配置或调用失败，降级到离线规则
         llm_error = str(e)
@@ -412,6 +361,8 @@ def analyze_project(description: str, use_fake: bool = False) -> dict:
     return {
         "success": True,
         "project_name": inferred.get("project_name", ""),
+        "project_type": inferred.get("project_type", ""),
+        "overview": inferred.get("overview", ""),
         "description": description.strip(),
         "items": matched_items,
         "dropped": dropped,
@@ -450,15 +401,24 @@ def recommend_for_project(description: str, use_fake: bool = False) -> str:
     lines = [
         f"项目：{result.get('project_name') or '（未命名项目）'}",
         f"需求描述：{result['description']}",
-        "─" * 40,
     ]
+    if result.get("overview"):
+        lines.append(f"📋 项目说明：{result['overview']}")
+    lines.append("─" * 40)
 
     for it in result["items"]:
         need = f"需{it['quantity']}"
         if it["necessity"] == "optional":
             need += "（可选）"
-        note = f" — {it['note']}" if it["note"] else ""
-        header = f"「{it['name']}」{it['category']}>{it['sub_category']} {need}{note}"
+        explain_parts = []
+        if it.get("role"):
+            explain_parts.append(f"作用：{it['role']}")
+        if it.get("why"):
+            explain_parts.append(f"原因：{it['why']}")
+        if it.get("options"):
+            explain_parts.append(f"备选：{it['options']}")
+        explain = f"（{' | '.join(explain_parts)}）" if explain_parts else ""
+        header = f"「{it['name']}」{it['category']}>{it['sub_category']} {need}{explain}"
 
         if it["status"] == "ok":
             lines.append(f"✅ 有货 {header}")

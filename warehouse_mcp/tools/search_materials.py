@@ -76,24 +76,15 @@ def search_material_rows(
         conn.close()
 
 
-def search_materials(
-    keyword: str = "",
-    category: str = "",
-    tag: str = "",
-    only_available: bool = False
-) -> str:
-    """查询库存物料（文本输出）。
+def format_material_rows(rows: list) -> str:
+    """把结构化物料行格式化为文本（非耗材同名合并、耗材独立）。
 
     Args:
-        keyword: 按名称/类别/型号/子类/编号模糊搜索（多词空格分隔，OR 匹配）
-        category: 按大类精确筛选（如 "主控板"）
-        tag: 按标签搜索（匹配标签名或描述，可与 keyword 同时使用）
-        only_available: 仅显示有库存的物料
-    """
-    rows = search_material_rows(
-        keyword=keyword, category=category, tag=tag, only_available=only_available
-    )
+        rows: search_material_rows 返回的行列表
 
+    Returns:
+        格式化文本；rows 为空时返回"没有找到匹配的物料。"
+    """
     if not rows:
         return "没有找到匹配的物料。"
 
@@ -150,3 +141,23 @@ def search_materials(
             )
 
     return f"共 {len(lines)} 条结果：\n" + "\n".join(lines)
+
+
+def search_materials(
+    keyword: str = "",
+    category: str = "",
+    tag: str = "",
+    only_available: bool = False
+) -> str:
+    """查询库存物料（文本输出）。
+
+    Args:
+        keyword: 按名称/类别/型号/子类/编号模糊搜索（多词空格分隔，OR 匹配）
+        category: 按大类精确筛选（如 "主控板"）
+        tag: 按标签搜索（匹配标签名或描述，可与 keyword 同时使用）
+        only_available: 仅显示有库存的物料
+    """
+    rows = search_material_rows(
+        keyword=keyword, category=category, tag=tag, only_available=only_available
+    )
+    return format_material_rows(rows)

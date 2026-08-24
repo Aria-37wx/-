@@ -9,7 +9,8 @@ from warehouse_mcp.db.database import init_db, get_db, CATEGORIES, get_category_
 from warehouse_mcp.tools.add_material import add_material
 from warehouse_mcp.tools.checkout import checkout
 from warehouse_mcp.tools.return_item import return_item
-from warehouse_mcp.tools.search_materials import search_materials, search_material_rows
+from warehouse_mcp.tools.search_materials import search_materials, search_material_rows, format_material_rows
+from warehouse_mcp.tools.search_filter import filter_search_results
 from warehouse_mcp.tools.borrow_query import get_borrow_records
 from warehouse_mcp.tools.smart_add_material import smart_add_material, infer_material_info
 from warehouse_mcp.tools.recommend import analyze_project
@@ -130,69 +131,8 @@ elif page == "AI 对话":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Step: 显示分析结果
-    if st.session_state.ai_step == "showing_result" and st.session_state.ai_analysis:
-        analysis = st.session_state.ai_analysis
-        intent = analysis.get("intent", "unknown")
-
-        with st.chat_message("assistant"):
-            if intent == "unknown":
-                st.warning("抱歉，我没太理解你的意图。能换个说法试试吗？")
-                st.caption(f"分析: {analysis.get('reasoning', '')}")
-                if st.button("好的，我重新说"):
-                    st.session_state.ai_step = "input"
-                    st.session_state.ai_analysis = None
-                    st.rerun()
-            else:
-                intent_labels = {"inbound": "入库", "outbound": "出库", "search": "查询", "return": "归还", "recommend": "项目推荐"}
-                label = intent_labels.get(intent, intent)
-                confidence = analysis.get("confidence", "low")
-                conf_emoji = {"high": "?", "medium": "?", "low": "?"}.get(confidence, "?")
-
-                st.markdown(f"**{conf_emoji} 我理解你想「{label}」**")
-                st.caption(analysis.get("reasoning", ""))
-
-                if analysis.get("name"):
-                    st.write(f"物料名称：**{analysis['name']}**")
-                if analysis.get("description") and analysis["description"] != analysis.get("user_input", ""):
-                    st.caption(f"描述：{analysis['description']}")
-                if analysis.get("quantity", 1) > 1:
-                    st.write(f"数量：**{analysis['quantity']}**")
-                if analysis.get("user_phone"):
-                    st.write(f"操作人：{analysis['user_phone']}")
-                if intent in ("outbound", "search") and analysis.get("keyword"):
-                    st.caption(f"搜索关键词：{analysis['keyword']}")
-
-                # 操作按钮
-                if intent == "inbound":
-                    if st.button("开始智能入库", type="primary"):
-                        st.session_state.ai_step = "confirm_inbound"
-                        st.rerun()
-                elif intent == "search":
-                    if st.button("查询", type="primary"):
-                        st.session_state.ai_step = "exec_search"
-                        st.rerun()
-                elif intent == "return":
-                    if st.button("查询待归还", type="primary"):
-                        st.session_state.ai_step = "exec_return"
-                        st.rerun()
-                elif intent == "outbound":
-                    if st.button("搜索匹配物料", type="primary"):
-                        st.session_state.ai_step = "exec_outbound_list"
-                        st.rerun()
-                elif intent == "recommend":
-                    if st.button("生成物料清单", type="primary"):
-                        st.session_state.ai_step = "exec_recommend"
-                        _reset_ai_rec_state()
-                        st.rerun()
-
-                if st.button("不对，我重新说"):
-                    st.session_state.ai_step = "input"
-                    st.session_state.ai_analysis = None
-                    st.rerun()
-
     # Step: 确认入库
-    elif st.session_state.ai_step == "confirm_inbound" and st.session_state.ai_analysis:
+    if st.session_state.ai_step == "confirm_inbound" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
 
         # 首次进入时调用 infer_material_info 获取详细分类
@@ -269,24 +209,32 @@ elif page == "AI 对话":
     elif st.session_state.ai_step == "exec_search" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
         keyword = analysis.get("keyword", "") or analysis.get("name", "")
+        query = analysis.get("user_input") or keyword
+
+        # 结构化搜索（名称/类别/型号 + 标签）按 id 去重
+        cands = {}
+        for r in search_material_rows(keyword=keyword) + search_material_rows(tag=keyword):
+            cands[r["id"]] = r
+        cands = list(cands.values())
 
         with st.chat_message("assistant"):
-            st.markdown(f"正在搜索与 **{keyword}** 相关的物料...")
-
-            # 1. 按名称/类别/型号搜索
-            by_name = search_materials(keyword=keyword)
-            # 2. 按标签搜索
-            by_tag = search_materials(tag=keyword)
-
-            if "没有找到" in by_name and "没有找到" in by_tag:
-                st.warning("没有找到匹配的物料。试试换个说法？")
+            if not cands:
+                st.warning(f"没有找到与「{keyword}」相关的物料，试试换个说法？")
             else:
-                if "没有找到" not in by_name:
-                    st.text(by_name)
-                if "没有找到" not in by_tag:
-                    st.divider()
-                    st.caption("以下是通过标签匹配的结果：")
-                    st.text(by_tag)
+                with st.spinner("AI 正在筛选匹配结果..."):
+                    use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
+                    filt = filter_search_results(query, cands, use_fake=use_fake, keyword=keyword)
+                keep_ids = set(filt["keep_ids"])
+                kept = [m for m in cands if m["id"] in keep_ids]
+
+                if filt.get("summary"):
+                    st.caption(f"AI 筛选：{filt['summary']}")
+
+                if not kept:
+                    st.warning("搜索到一些相关词条，但经 AI 判断都不符合你的意图。试试更具体地描述？")
+                else:
+                    st.markdown(f"共 **{len(kept)}** 条符合的结果：")
+                    st.text(format_material_rows(kept))
 
         if st.button("继续对话"):
             st.session_state.ai_step = "input"
@@ -312,25 +260,41 @@ elif page == "AI 对话":
     elif st.session_state.ai_step == "exec_outbound_list" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
         keyword = analysis.get("keyword", "") or analysis.get("name", "")
+        query = analysis.get("user_input") or keyword
 
         # 复用结构化搜索：名称/类别/型号 + 标签，按 id 去重
         matched = {}
         for r in search_material_rows(keyword=keyword, only_available=True) + \
                 search_material_rows(tag=keyword, only_available=True):
             matched[r["id"]] = r
+        cands = list(matched.values())
+
+        # 智能筛选（同一 query 缓存，避免每次交互重复调用 LLM）
+        if st.session_state.get("ai_outbound_query") != query:
+            use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
+            filt = filter_search_results(query, cands, use_fake=use_fake, keyword=keyword)
+            st.session_state.ai_outbound_query = query
+            st.session_state.ai_outbound_keep_ids = set(filt["keep_ids"])
+            st.session_state.ai_outbound_summary = filt.get("summary", "")
+        keep_ids = st.session_state.get("ai_outbound_keep_ids", set())
 
         # 同名非耗材合并、耗材独立，得到可批量出库的条目
-        items = _group_search_rows(list(matched.values()))
+        items = _group_search_rows([m for m in cands if m["id"] in keep_ids])
 
         if not items:
             with st.chat_message("assistant"):
-                st.warning(f"未找到与「{keyword}」匹配的可出库物料，请检查库存或换个说法。")
+                if cands and not keep_ids:
+                    st.warning(f"找到了「{keyword}」相关词条，但经 AI 判断都不符合你的意图。试试更具体地描述？")
+                else:
+                    st.warning(f"未找到与「{keyword}」匹配的可出库物料，请检查库存或换个说法。")
             if st.button("返回对话"):
                 st.session_state.ai_step = "input"
                 st.session_state.ai_analysis = None
                 st.rerun()
         else:
             with st.chat_message("assistant"):
+                if st.session_state.get("ai_outbound_summary"):
+                    st.caption(f"AI 筛选：{st.session_state.ai_outbound_summary}")
                 st.markdown(f"找到 **{len(items)}** 类与「{keyword}」匹配的物料，可批量选择：")
 
             options = {}
@@ -595,8 +559,16 @@ elif page == "AI 对话":
         elif intent == "recommend":
             st.session_state.ai_step = "exec_recommend"
             _reset_ai_rec_state()
+        elif intent == "inbound":
+            st.session_state.ai_step = "confirm_inbound"
+            st.session_state.ai_infer_result = None
+        elif intent == "outbound":
+            st.session_state.ai_step = "exec_outbound_list"
+            st.session_state.ai_outbound_query = None
+        elif intent == "return":
+            st.session_state.ai_step = "exec_return"
         else:
-            st.session_state.ai_step = "showing_result"
+            st.session_state.ai_step = "input"
         analysis["user_input"] = user_input
         st.session_state.ai_analysis = analysis
         st.rerun()

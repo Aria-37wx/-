@@ -228,6 +228,11 @@ def classify_intent_fake(user_input: str) -> dict:
         for w in sorted(all_intent_words, key=len, reverse=True):
             kw_text = kw_text.replace(w, "")
         keyword = kw_text.strip().rstrip("？?。，,")
+        # 去掉口语主语/请求前缀（"我想/我要/帮我..."），避免关键词混入主语
+        for p in ["我想", "我要", "帮我", "给我", "麻烦", "请问", "想", "要", "请", "帮"]:
+            if keyword.startswith(p):
+                keyword = keyword[len(p):].strip()
+                break
 
     result = {
         "intent": max_intent,

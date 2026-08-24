@@ -40,7 +40,8 @@ def _build_intent_system_prompt(context=None) -> str:
 3. **search（查询）**：用户想查库存。关键词："有没有"、"在哪"、"查一下"、"库存"、"还有吗"、"找"
 4. **return（归还）**：用户想归还借出的物料。关键词："还"、"归还"、"退回"、"还回来"
 5. **recommend（项目推荐）**：用户描述一个想做/正在做的项目，需要系统给出**完整的多类物料清单**。关键词："做一个"、"想搞"、"项目"、"毕设"、"设计"、"搭建"、"需要哪些物料"、"怎么做"、"物料清单"
-6. **unknown（未知）**：无法确定意图
+6. **chat（闲聊/对话）**：用户在问候、寒暄、询问你能做什么、表达感谢，或进行与物料管理无关的普通聊天。关键词："你好"、"谢谢"、"你能做什么"、"你是谁"、"介绍一下自己"、"在吗"、"你会什么"
+7. **unknown（未知）**：无法确定意图
 
 **recommend 与其他意图的区分（非常重要）**：
 - recommend = 描述一个"项目/作品"，需要**多类物料**的组合清单（如"做一辆小车"、"做个温湿度监测系统"）。
@@ -97,7 +98,11 @@ def _build_intent_system_prompt(context=None) -> str:
 
 查询（不是推荐）: "想要 uno 板子" → intent="search", name="Arduino Uno", keyword="uno arduino 开发板"
 
-查询（不是推荐）: "有没有面包板" → intent="search", name="面包板", keyword="面包板" """
+查询（不是推荐）: "有没有面包板" → intent="search", name="面包板", keyword="面包板"
+
+闲聊: "你能做什么" → intent="chat", name="", keyword=""
+闲聊: "谢谢" → intent="chat", name="", keyword=""
+闲聊: "你好" → intent="chat", name="", keyword="" """
     if context:
         prompt += _build_context_block(context)
     return prompt
@@ -256,6 +261,19 @@ def classify_intent_fake(user_input: str, context: dict = None) -> dict:
             max_intent = "inbound"
             max_score = 1
         else:
+            if _looks_like_chat(text):
+                return {
+                    "intent": "chat",
+                    "name": "",
+                    "description": text,
+                    "quantity": 1,
+                    "user_phone": phone,
+                    "keyword": "",
+                    "confidence": "high",
+                    "reasoning": "检测到闲聊/问候/能力询问",
+                    "refine": False,
+                    "from_context": False,
+                }
             guessed = _guess_name(text)
             if guessed:
                 return {
@@ -400,3 +418,72 @@ def _looks_like_refinement(text: str, inbound_words, outbound_words, search_word
     if any(w in text for w in refine_contains):
         return True
     return False
+
+
+def _looks_like_chat(text: str) -> bool:
+    """判断是否是闲聊/问候/能力询问（不触发工具调用）。"""
+    t = text.strip().lower()
+    chat_keywords = [
+        "你好", "您好", "嗨", "哈喽", "hello", "hi", "在吗", "在不在",
+        "谢谢", "多谢", "感谢", "辛苦", "thx", "thanks", "thank",
+        "你能做", "你会", "你能帮", "有什么功能", "能干嘛", "能干什么",
+        "会什么", "介绍一下", "你是谁", "怎么用", "使用说明", "帮助",
+    ]
+    return any(w in t for w in chat_keywords)
+
+
+_CHAT_SYSTEM_PROMPT = """你是一个大学生科创实验室的物料管理助手。你可以帮用户：
+- 入库：登记新买的物料
+- 出库：借出/领用物料
+- 查询：查库存有没有、在哪
+- 归还：归还借出的物料
+- 项目推荐：根据用户描述的项目规划物料清单
+
+对于问候、寒暄、询问能力、感谢等普通对话，用自然、友好、简洁的语气回复（一两句话即可），并适当引导用户说出具体需求。不要生硬，不要说"我无法理解"。"""
+
+
+def chat_reply(user_input: str, use_fake: bool = False) -> str:
+    """对闲聊/对话意图生成自然回复（问候、能力询问、感谢等）。
+
+    Args:
+        user_input: 用户输入
+        use_fake: 是否用离线规则（未配 API Key 时）
+
+    Returns:
+        自然语言回复字符串
+    """
+    if use_fake:
+        return _chat_reply_fake(user_input)
+    from warehouse_mcp.llm_client import _api_key, _base_url, _model, _get_openai
+    if not _api_key:
+        return _chat_reply_fake(user_input)
+    OpenAI = _get_openai()
+    client = OpenAI(api_key=_api_key, base_url=_base_url)
+    response = client.chat.completions.create(
+        model=_model,
+        messages=[
+            {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ],
+        temperature=0.7,
+        max_tokens=300,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _chat_reply_fake(text: str) -> str:
+    """离线规则版闲聊回复。"""
+    t = text.strip().lower()
+    if any(w in t for w in ["你好", "您好", "嗨", "哈喽", "hello", "hi", "在吗", "在不在"]):
+        return "你好呀！我是你的物料管理助手，可以帮你查库存、借还物料、登记入库，还能根据你的项目规划物料清单。有什么需要随时说～"
+    if any(w in t for w in ["谢谢", "多谢", "感谢", "辛苦", "thx", "thanks", "thank"]):
+        return "不客气～有需要随时找我。"
+    if any(w in t for w in ["你能做", "你会", "你能帮", "有什么功能", "能干嘛", "能干什么", "会什么", "介绍一下", "你是谁", "怎么用", "使用", "帮助"]):
+        return ("我可以帮你做这些事：\n"
+                "- 入库：登记新买的物料\n"
+                "- 出库：借出/领用物料\n"
+                "- 查询：查库存有没有、在哪\n"
+                "- 归还：归还借出的物料\n"
+                "- 项目推荐：描述你想做的项目，我帮你规划物料清单\n"
+                "直接告诉我你的需求就行～")
+    return "我主要帮你管理实验室物料，可以查库存、借还物料、登记入库，还能做项目物料推荐。你可以直接说说想找什么、或想做什么项目？"

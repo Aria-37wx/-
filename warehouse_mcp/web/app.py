@@ -14,7 +14,7 @@ from warehouse_mcp.tools.search_filter import filter_search_results
 from warehouse_mcp.tools.borrow_query import get_borrow_records
 from warehouse_mcp.tools.smart_add_material import smart_add_material, infer_material_info
 from warehouse_mcp.tools.recommend import analyze_project
-from warehouse_mcp.tools.intent_router import classify_intent, classify_intent_fake
+from warehouse_mcp.tools.intent_router import classify_intent, classify_intent_fake, chat_reply
 from warehouse_mcp.llm_client import configure as llm_configure, get_config_status
 
 st.set_page_config(page_title="物料管理系统", layout="wide")
@@ -781,7 +781,10 @@ elif page == "AI 对话":
             st.session_state.ai_context = None
 
         # 添加 AI 回复到消息
-        if intent == "unknown":
+        if intent == "chat":
+            with st.spinner("AI 正在回复..."):
+                ai_content = chat_reply(user_input, use_fake=use_fake)
+        elif intent == "unknown":
             ai_content = "抱歉，我没太理解你的意图。能换个说法试试吗？"
         elif intent == "inbound":
             ai_content = f"我理解你想**入库**「{name or '未知物料'}」"

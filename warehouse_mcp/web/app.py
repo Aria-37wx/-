@@ -9,7 +9,7 @@ from warehouse_mcp.db.database import init_db, get_db, CATEGORIES, get_category_
 from warehouse_mcp.tools.add_material import add_material
 from warehouse_mcp.tools.checkout import checkout
 from warehouse_mcp.tools.return_item import return_item
-from warehouse_mcp.tools.search_materials import search_materials
+from warehouse_mcp.tools.search_materials import search_materials, search_material_rows
 from warehouse_mcp.tools.borrow_query import get_borrow_records
 from warehouse_mcp.tools.smart_add_material import smart_add_material, infer_material_info
 from warehouse_mcp.tools.recommend import analyze_project
@@ -47,6 +47,41 @@ def _reset_ai_rec_state():
     for k in list(st.session_state.keys()):
         if k in ("ai_rec_select", "ai_rec_mode", "ai_rec_phone") or k.startswith("ai_rec_qty_"):
             del st.session_state[k]
+
+
+def _group_search_rows(rows):
+    """把搜索结果聚合成可批量出库的条目。
+
+    - 非耗材：同名（+同大类+同子类+同型号）合并为一条，库存求和，
+      matched 保留每条独立编号的记录（批量出库时逐件处理）。
+    - 耗材：本身合并存储，每条独立成项。
+    """
+    non_cons = {}
+    items = []
+    for r in rows:
+        if r["is_consumable"]:
+            items.append({
+                "name": r["name"], "category": r["category"],
+                "sub_category": r["sub_category"], "model": r["model"],
+                "is_consumable": True, "location": r["location"] or "",
+                "available_qty": r["quantity"], "matched": [dict(r)],
+            })
+        else:
+            key = (r["name"], r["category"], r["sub_category"], r["model"])
+            if key not in non_cons:
+                non_cons[key] = {
+                    "name": r["name"], "category": r["category"],
+                    "sub_category": r["sub_category"], "model": r["model"],
+                    "is_consumable": False, "location": r["location"] or "",
+                    "available_qty": 0, "matched": [],
+                }
+            non_cons[key]["available_qty"] += r["quantity"]
+            non_cons[key]["matched"].append(dict(r))
+            if r["location"]:
+                non_cons[key]["location"] = r["location"]
+    items.extend(non_cons.values())
+    items.sort(key=lambda x: (x["category"], x["name"]))
+    return items
 
 # ==================== 库存总览 ====================
 if page == "库存总览":
@@ -112,7 +147,7 @@ elif page == "AI 对话":
                 intent_labels = {"inbound": "入库", "outbound": "出库", "search": "查询", "return": "归还", "recommend": "项目推荐"}
                 label = intent_labels.get(intent, intent)
                 confidence = analysis.get("confidence", "low")
-                conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
+                conf_emoji = {"high": "?", "medium": "?", "low": "?"}.get(confidence, "?")
 
                 st.markdown(f"**{conf_emoji} 我理解你想「{label}」**")
                 st.caption(analysis.get("reasoning", ""))
@@ -273,64 +308,21 @@ elif page == "AI 对话":
             st.session_state.ai_analysis = None
             st.rerun()
 
-    # Step: 出库 — 搜索物料列表
+    # Step: 出库 — 搜索物料列表（批量）
     elif st.session_state.ai_step == "exec_outbound_list" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
         keyword = analysis.get("keyword", "") or analysis.get("name", "")
 
-        # 搜索库存
-        conn = get_db()
-        try:
-            matched = {}
+        # 复用结构化搜索：名称/类别/型号 + 标签，按 id 去重
+        matched = {}
+        for r in search_material_rows(keyword=keyword, only_available=True) + \
+                search_material_rows(tag=keyword, only_available=True):
+            matched[r["id"]] = r
 
-            # 拆分关键词为多个独立搜索词
-            terms = [t for t in keyword.split() if t.strip()]
-            if not terms:
-                terms = [keyword]
+        # 同名非耗材合并、耗材独立，得到可批量出库的条目
+        items = _group_search_rows(list(matched.values()))
 
-            # 1. 名称/类别/型号搜索（每个词独立 OR）
-            name_clauses = []
-            name_params = []
-            for term in terms:
-                kw = f"%{term}%"
-                name_clauses.append(
-                    "(name LIKE ? OR category LIKE ? OR model LIKE ? OR sub_category LIKE ?)"
-                )
-                name_params.extend([kw, kw, kw, kw])
-            name_sql = " OR ".join(name_clauses)
-            rows = conn.execute(
-                f"""SELECT * FROM materials
-                   WHERE quantity > 0
-                     AND ({name_sql})
-                   ORDER BY category, name""",
-                name_params
-            ).fetchall()
-            for r in rows:
-                matched[r["id"]] = dict(r)
-
-            # 2. 标签搜索（每个词独立 OR）
-            tag_clauses = []
-            tag_params = []
-            for term in terms:
-                kw = f"%{term}%"
-                tag_clauses.append("(t.name LIKE ? OR t.description LIKE ?)")
-                tag_params.extend([kw, kw])
-            tag_sql = " OR ".join(tag_clauses)
-            tag_rows = conn.execute(
-                f"""SELECT DISTINCT m.* FROM materials m
-                   JOIN material_tags mt ON m.id = mt.material_id
-                   JOIN tags t ON mt.tag_name = t.name
-                   WHERE m.quantity > 0
-                     AND ({tag_sql})""",
-                tag_params
-            ).fetchall()
-            for r in tag_rows:
-                if r["id"] not in matched:
-                    matched[r["id"]] = dict(r)
-        finally:
-            conn.close()
-
-        if not matched:
+        if not items:
             with st.chat_message("assistant"):
                 st.warning(f"未找到与「{keyword}」匹配的可出库物料，请检查库存或换个说法。")
             if st.button("返回对话"):
@@ -339,42 +331,72 @@ elif page == "AI 对话":
                 st.rerun()
         else:
             with st.chat_message("assistant"):
-                st.markdown(f"找到 **{len(matched)}** 个与「{keyword}」匹配的物料，请选择：")
+                st.markdown(f"找到 **{len(items)}** 类与「{keyword}」匹配的物料，可批量选择：")
 
-            # 构建选项
             options = {}
-            for mid, r in sorted(matched.items(), key=lambda x: f"{x[1]['category']}{x[1]['name']}"):
-                type_label = "耗材" if r["is_consumable"] else "非耗材"
-                loc = r["location"] or "未指定"
-                label = f"[{r['id']}] {r['name']} | {r['category']}>{r['sub_category']} | {type_label} | 库存:{r['quantity']} | {loc}"
-                options[label] = mid
+            for idx, it in enumerate(items):
+                type_label = "耗材" if it["is_consumable"] else "非耗材"
+                loc = it["location"] or "未指定"
+                label = (f"{it['name']} | {it['category']}>{it['sub_category']} "
+                         f"| {type_label} | 库存:{it['available_qty']} | {loc}")
+                options[label] = idx
 
-            selected_label = st.radio("选择物料", list(options.keys()), key="ai_outbound_select")
-            selected_id = options[selected_label]
-            selected_row = matched[selected_id]
+            selected = st.multiselect("选择要出库的物料", list(options.keys()),
+                                      key="ai_outbound_select")
+            st.caption("非耗材同名已合并显示，出库时按条逐件处理；耗材可一次按量出库。")
 
-            # 展示选中物料详情
-            st.divider()
-            st.caption(f"已选择：**{selected_row['name']}**（{selected_row['id']}）")
+            chosen_qty = {}
+            for label in selected:
+                it = items[options[label]]
+                chosen_qty[options[label]] = int(st.number_input(
+                    f"{label} — 出库数量",
+                    min_value=1, max_value=it["available_qty"], value=1, step=1,
+                    key=f"ai_outbound_qty_{options[label]}"
+                ))
 
-            col_a, col_b, col_c = st.columns([1, 1, 2])
-            with col_a:
-                mode = st.radio("出库方式", ["consume", "borrow"],
-                                format_func=lambda m: "领用（不归还）" if m == "consume" else "借出（需归还）")
-            with col_b:
+            col1, col2 = st.columns(2)
+            with col1:
+                mode = st.radio("出库方式", ["借出（需归还）", "领用（永久出库）"],
+                                key="ai_outbound_mode")
+            with col2:
                 phone = st.text_input("操作人手机号", value=analysis.get("user_phone", ""),
-                                      placeholder="13800000001")
-            with col_c:
-                st.caption("")
+                                      placeholder="13800000001", key="ai_outbound_phone")
 
             if st.button("确认出库", type="primary"):
                 if not phone.strip() or not phone.strip().isdigit() or len(phone.strip()) != 11:
                     st.toast("请输入有效的 11 位手机号", icon=":material/error:")
+                elif not selected:
+                    st.toast("请选择要出库的物料", icon=":material/error:")
                 else:
-                    result = checkout(material_id=selected_id, user_phone=phone.strip(), mode=mode)
-                    st.session_state.ai_messages.append({"role": "assistant", "content": result})
+                    mode_val = "borrow" if "借出" in mode else "consume"
+                    report = []
+                    for label in selected:
+                        it = items[options[label]]
+                        need = chosen_qty[options[label]]
+                        taken = 0
+                        for m in it["matched"]:
+                            if m["quantity"] <= 0:
+                                continue
+                            want = min(need - taken, m["quantity"])
+                            r = checkout(m["id"], phone.strip(), mode_val, quantity=want)
+                            if "成功" in r:
+                                taken += want
+                                m["quantity"] -= want
+                            elif not m["is_consumable"] and want > 1:
+                                r = checkout(m["id"], phone.strip(), mode_val, quantity=1)
+                                if "成功" in r:
+                                    taken += 1
+                                    m["quantity"] -= 1
+                            if taken >= need:
+                                break
+                        report.append(f"{it['name']}：出库 {taken}/{need} 件")
+                    st.session_state.ai_messages.append(
+                        {"role": "assistant",
+                         "content": "批量出库完成：\n" + "\n".join(report)}
+                    )
                     st.session_state.ai_step = "input"
                     st.session_state.ai_analysis = None
+                    st.toast("批量出库完成", icon=":material/check:")
                     st.rerun()
 
             if st.button("取消"):
@@ -409,7 +431,7 @@ elif page == "AI 对话":
                 s = result["summary"]
                 st.markdown(
                     f"项目：**{result.get('project_name') or '（未命名项目）'}**　|　"
-                    f"✅ 可满足 {s['ok']} 项　⚠️ 部分满足 {s['partial']} 项　❌ 缺货 {s['missing']} 项"
+                    f"? 可满足 {s['ok']} 项　?? 部分满足 {s['partial']} 项　? 缺货 {s['missing']} 项"
                 )
                 if result.get("llm_error"):
                     st.info(f"LLM 调用失败，已降级为离线规则（{result['llm_error'][:80]}）")
@@ -417,7 +439,7 @@ elif page == "AI 对话":
                     st.caption("；".join(result["dropped"]))
 
                 # 明细清单
-                status_emoji = {"ok": "✅", "partial": "⚠️", "missing": "❌"}
+                status_emoji = {"ok": "?", "partial": "??", "missing": "?"}
                 status_label = {"ok": "有货", "partial": "部分满足", "missing": "缺货"}
                 for it in result["items"]:
                     optional = "（可选）" if it["necessity"] == "optional" else ""
@@ -433,11 +455,11 @@ elif page == "AI 对话":
                         if it["shortage"]:
                             st.warning(f"库存不足，还缺 {it['shortage']} 件")
                         if it["alternatives"]:
-                            st.caption("💡 同类替代：")
+                            st.caption("? 同类替代：")
                             for a in it["alternatives"]:
                                 st.write(f"· `{a['id']}` {a['name']}（{a['sub_category']}）库存 {a['quantity']}")
                         elif it["shortage"]:
-                            st.caption("💡 无同类替代品，建议采购")
+                            st.caption("? 无同类替代品，建议采购")
 
         # 批量出库（放在对话气泡外，操作更顺手）
         if result.get("success"):
@@ -453,7 +475,7 @@ elif page == "AI 对话":
                     # 库存充足的项默认勾选；部分满足的项会出完该类剩余库存，默认不勾选
                     if it["status"] == "ok":
                         default_selected.append(label)
-                st.caption("已自动勾选库存充足的项；⚠️ 部分满足的项默认不勾选"
+                st.caption("已自动勾选库存充足的项；?? 部分满足的项默认不勾选"
                            "（勾选后会把该类剩余库存全部出完），需要时手动勾选。")
                 selected = st.multiselect("选择要出库的物料", list(options.keys()),
                                           default=default_selected, key="ai_rec_select")
@@ -940,7 +962,7 @@ elif page == "标签管理":
             if t["description"]:
                 st.caption(t["description"])
             else:
-                st.caption("📝 暂无描述")
+                st.caption("? 暂无描述")
         with c2:
             if st.button("编辑描述", key=f"edit_{t['name']}"):
                 st.session_state.edit_tag = t["name"]

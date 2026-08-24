@@ -361,7 +361,7 @@ $env:LLM_MODEL = "deepseek-chat"                 # 默认
          │
          └── intent: inbound  → 确认入库表单（含分类推断）
          └── intent: search   → 多维度搜索库存（名称+标签）
-         └── intent: outbound → 搜索库存 → 选物料+手机号 → 确认借出/领用
+         └── intent: outbound → 搜索库存（复用 search_material_rows）→ 批量勾选+数量 → 确认借出/领用
          └── intent: return   → 查询待归还列表
          └── intent: unknown  → 提示重新描述
 ```
@@ -397,11 +397,6 @@ AI: 我理解你想出库「MicroPython开发板」
 AI: 我理解你想查询「低功耗 WiFi 蓝牙 LoRa 通信模块」
     → 同时搜物料名 + 标签描述
     → 展示匹配结果
-```
-
----
-
-## 10. 编码规范
 ```
 
 ---

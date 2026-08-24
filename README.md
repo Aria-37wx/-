@@ -76,8 +76,8 @@ python -m warehouse_mcp.server
 用户: "入库 5 块 ESP32 开发板"
   → AI 自动推断分类、子类、位置 → 确认 → 入库
 
-用户: "我想借一块能跑 MicroPython 的开发板"
-  → 搜索库存 → 列出可选物料 → 选一个 → 确认出库
+用户: "我想借两块能跑 MicroPython 的开发板"
+  → 搜索库存 → 列出匹配物料（同名非耗材合并显示） → 批量勾选 + 设置数量 → 确认出库
 
 用户: "有没有低功耗无线通信模块"
   → 直接展示匹配的 WiFi/蓝牙/LoRa 模块
@@ -99,7 +99,7 @@ warehouse agent/
 │   │   ├── add_material.py     # 基础入库
 │   │   ├── checkout.py         # 出库
 │   │   ├── return_item.py      # 归还
-│   │   ├── search_materials.py # 库存搜索
+│   │   ├── search_materials.py # 库存搜索（含结构化 search_material_rows）
 │   │   └── borrow_query.py     # 借还查询
 │   └── web/
 │       └── app.py              # Streamlit Web 界面

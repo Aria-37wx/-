@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """意图路由 — LLM 分析用户自然语言输入，判断意图并提取参数"""
 
-import json
 import re
 from warehouse_mcp.db.database import CATEGORIES, get_category_subs
+from warehouse_mcp.llm_client import _extract_json
 
 # ---- LLM 版本 ----
 
@@ -77,27 +77,6 @@ def _build_intent_system_prompt() -> str:
 查询（不是推荐）: "想要 uno 板子" → intent="search", name="Arduino Uno", keyword="uno arduino 开发板"
 
 查询（不是推荐）: "有没有面包板" → intent="search", name="面包板", keyword="面包板" """
-
-
-def _extract_json(text: str) -> dict:
-    """从 LLM 回复中提取 JSON"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
-    match = re.search(r'\{[\s\S]*\}', text)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-    raise ValueError(f"无法从 LLM 回复中解析 JSON: {text[:200]}")
 
 
 def classify_intent(user_input: str) -> dict:

@@ -24,8 +24,16 @@ CATEGORY_NAMES = list(CATEGORIES.keys())
 
 # ---- 侧边栏 ----
 st.sidebar.title("物料管理系统")
-page = st.sidebar.radio("功能导航", ["库存总览", "AI 对话", "入库", "出库", "归还", "记录查询", "标签管理"],
-                        label_visibility="visible")
+top_page = st.sidebar.radio("功能导航", ["介绍界面", "AI 对话", "更多"],
+                            label_visibility="visible")
+
+# 计算实际渲染页面：更多 → 功能列表 / 具体功能子页
+if top_page != "更多":
+    if st.session_state.get("sub_page"):
+        st.session_state.sub_page = None
+    page = top_page
+else:
+    page = st.session_state.get("sub_page") or "更多"
 
 conn = get_db()
 try:
@@ -84,29 +92,180 @@ def _group_search_rows(rows):
     items.sort(key=lambda x: (x["category"], x["name"]))
     return items
 
-# ==================== 库存总览 ====================
-if page == "库存总览":
-    st.header("库存总览")
+def _back_button():
+    """功能子页顶部的返回按钮：回到「更多」功能中心"""
+    if st.button("← 返回功能中心"):
+        st.session_state.sub_page = None
+        st.rerun()
 
-    col1, col2, col3 = st.columns(3)
+
+# ==================== 介绍界面 ====================
+if page == "介绍界面":
+    st.title("物料管理系统")
+    st.caption("大学生科创实验室物料管理智能体")
+
+    st.markdown("""
+    ### 系统简介
+    这是一套面向**大学生科创实验室**的物料管理系统，帮你把散落在抽屉、柜子里的
+    电子元器件、开发板、传感器、工具等物料**统一登记、分类存放、快速查找、规范借还**。
+    """)
+
+    st.markdown("### 系统特色")
+    col1, col2 = st.columns(2)
     with col1:
-        keyword = st.text_input("搜索关键词", placeholder="名称/类别/型号...")
+        st.markdown("""
+        - **AI 自然语言操作**：直接说"入库 5 块 ESP32"、"借两块能跑 MicroPython 的开发板"，
+          系统自动判断意图并执行。
+        - **三级分类体系**：10 个大类 → 50+ 子类，物料自动生成唯一编号并推荐存放位置。
+        - **借还全流程管理**：支持借出 / 领用两种模式，借出需归还，全程留痕可追溯。
+        """)
     with col2:
-        cat_filter = st.selectbox("大类筛选", ["全部"] + CATEGORY_NAMES)
-    with col3:
-        tag_filter = st.text_input("标签搜索", placeholder="如：ESP32、WiFi...")
+        st.markdown("""
+        - **项目智能推荐**：输入项目描述，AI 自动推理所需物料清单，对照库存给出
+          「有货 / 部分满足 / 缺货」预警，支持一键批量出库。
+        - **标签体系**：内置 60+ 产品系列标签，辅助 AI 更精准地理解和检索物料。
+        - **离线可用**：未配置 LLM API Key 时自动降级为内置关键词规则。
+        """)
 
-    st.caption('标签搜索会匹配标签名和标签描述（如搜"WiFi"会找到 ESP32 标签）')
+    st.markdown("### 快速上手")
+    st.markdown("""
+    1. 左侧点击 **「AI 对话」**，用自然语言完成入库 / 出库 / 查询 / 归还 / 项目推荐。
+    2. 左侧点击 **「更多」**，进入「入库 / 出库 / 归还 / 库存总览 / 记录查询 / 标签管理」手动操作。
+    3. 在「库存总览」中按 **大类 → 子类** 逐级浏览物料详情。
+    """)
 
-    result = search_materials(
-        keyword=keyword.strip(),
-        category=cat_filter if cat_filter != "全部" else "",
-        tag=tag_filter.strip()
-    )
-    if "没有找到" in result:
-        st.info(result)
+    st.info("所有功能入口都在左侧「AI 对话」和「更多」中。")
+
+# ==================== 更多（功能中心） ====================
+elif page == "更多":
+    st.title("功能中心")
+    st.caption("点击下方功能卡片进入对应界面")
+
+    features = [
+        ("入库", "登记新物料，支持标签与智能推断分类"),
+        ("出库", "借出或领用物料，自动扣减库存"),
+        ("归还", "查询并归还借出中的物料"),
+        ("库存总览", "按大类 → 子类逐级浏览库存"),
+        ("记录查询", "查看借还 / 领用历史记录"),
+        ("标签管理", "浏览与编辑物料标签库"),
+    ]
+
+    for row_start in range(0, len(features), 3):
+        cols = st.columns(3, gap="medium")
+        for col, (title, desc) in zip(cols, features[row_start:row_start + 3]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"### {title}")
+                    st.caption(desc)
+                    if st.button("进入", key=f"feature_{title}", use_container_width=True):
+                        st.session_state.sub_page = title
+                        st.rerun()
+
+# ==================== 库存总览 ====================
+elif page == "库存总览":
+    _back_button()
+    st.header("库存总览")
+    st.caption("按「大类 → 子类」逐级浏览，或直接输入关键词快速搜索。")
+
+    keyword = st.text_input("快速搜索", placeholder="名称 / 型号 / 标签...")
+
+    if keyword.strip():
+        rows = search_material_rows(keyword=keyword.strip()) + \
+               search_material_rows(tag=keyword.strip())
+        seen = {}
+        for r in rows:
+            seen[r["id"]] = r
+        rows = list(seen.values())
+        if not rows:
+            st.info("没有找到匹配的物料。")
+        else:
+            data = [{
+                "编号": r["id"], "名称": r["name"],
+                "类别": f"{r['category']} > {r['sub_category']}",
+                "型号": r["model"] or "—",
+                "类型": "耗材" if r["is_consumable"] else "非耗材",
+                "库存": r["quantity"], "位置": r["location"] or "—",
+                "标签": r["tag_list"] or "—",
+            } for r in rows]
+            st.dataframe(data, use_container_width=True, hide_index=True)
     else:
-        st.text(result)
+        view = st.session_state.get("inv_view", "category")
+        inv_cat = st.session_state.get("inv_cat", None)
+        inv_sub = st.session_state.get("inv_sub", None)
+
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT category, sub_category, COUNT(*) AS cnt, COALESCE(SUM(quantity),0) AS qty "
+                "FROM materials GROUP BY category, sub_category ORDER BY category, sub_category"
+            ).fetchall()
+        finally:
+            conn.close()
+        cat_map = {}
+        for r in rows:
+            cat_map.setdefault(r["category"], {})[r["sub_category"]] = (r["cnt"], r["qty"])
+
+        if view == "category":
+            for i in range(0, len(CATEGORY_NAMES), 2):
+                cols = st.columns(2, gap="medium")
+                for col, cat in zip(cols, CATEGORY_NAMES[i:i + 2]):
+                    subs = cat_map.get(cat, {})
+                    total_kinds = sum(c for c, _ in subs.values())
+                    total_qty = sum(q for _, q in subs.values())
+                    with col:
+                        with st.container(border=True):
+                            st.markdown(f"### {cat}")
+                            st.caption(f"{len(subs)} 个子类 · {total_kinds} 种 · 库存 {total_qty} 件")
+                            if st.button("查看子类", key=f"inv_cat_{cat}", use_container_width=True):
+                                st.session_state.inv_view = "sub"
+                                st.session_state.inv_cat = cat
+                                st.session_state.inv_sub = None
+                                st.rerun()
+
+        elif view == "sub":
+            if st.button("← 返回大类"):
+                st.session_state.inv_view = "category"
+                st.session_state.inv_cat = None
+                st.rerun()
+            st.subheader(inv_cat)
+            subs = CATEGORIES[inv_cat]["subs"]
+            sub_map = cat_map.get(inv_cat, {})
+            for i in range(0, len(subs), 2):
+                cols = st.columns(2, gap="medium")
+                for col, (sub_name, _code) in zip(cols, subs[i:i + 2]):
+                    cnt, qty = sub_map.get(sub_name, (0, 0))
+                    with col:
+                        with st.container(border=True):
+                            st.markdown(f"### {sub_name}")
+                            st.caption(f"{cnt} 种 · 库存 {qty} 件")
+                            if st.button("查看物料", key=f"inv_sub_{inv_cat}_{sub_name}", use_container_width=True):
+                                st.session_state.inv_view = "items"
+                                st.session_state.inv_sub = sub_name
+                                st.rerun()
+
+        else:  # items
+            c1, c2 = st.columns(2)
+            if c1.button("← 返回子类"):
+                st.session_state.inv_view = "sub"
+                st.session_state.inv_sub = None
+                st.rerun()
+            if c2.button("← 返回大类"):
+                st.session_state.inv_view = "category"
+                st.session_state.inv_cat = None
+                st.session_state.inv_sub = None
+                st.rerun()
+            st.subheader(f"{inv_cat} › {inv_sub}")
+            mat_rows = [m for m in search_material_rows(category=inv_cat) if m["sub_category"] == inv_sub]
+            if not mat_rows:
+                st.info("该子类暂无物料。")
+            else:
+                data = [{
+                    "编号": m["id"], "名称": m["name"], "型号": m["model"] or "—",
+                    "类型": "耗材" if m["is_consumable"] else "非耗材",
+                    "库存": m["quantity"], "位置": m["location"] or "—",
+                    "标签": m["tag_list"] or "—",
+                } for m in mat_rows]
+                st.dataframe(data, use_container_width=True, hide_index=True)
 
 # ==================== AI 对话 ====================
 elif page == "AI 对话":
@@ -676,6 +835,7 @@ elif page == "AI 对话":
 
 # ==================== 入库 ====================
 elif page == "入库":
+    _back_button()
     st.header("物料入库")
 
     if st.session_state.get("add_step") == "confirm":
@@ -790,6 +950,7 @@ elif page == "入库":
 
 # ==================== 出库 ====================
 elif page == "出库":
+    _back_button()
     st.header("物料出库")
 
     if st.session_state.get("checkout_step") == "confirm":
@@ -865,6 +1026,7 @@ elif page == "出库":
 
 # ==================== 归还 ====================
 elif page == "归还":
+    _back_button()
     st.header("物料归还")
 
     if st.session_state.get("return_step") == "confirm":
@@ -929,6 +1091,7 @@ elif page == "归还":
 
 # ==================== 记录查询 ====================
 elif page == "记录查询":
+    _back_button()
     st.header("出库记录查询")
 
     # 头部一行：记录类型 + 筛选开关（把「仅显示借出中」挪到顶部和类型同一行）
@@ -990,6 +1153,7 @@ elif page == "记录查询":
 
 # ==================== 标签管理 ====================
 elif page == "标签管理":
+    _back_button()
     st.header("标签管理")
     st.caption("标签用于帮助智能体理解物料特性。标签名是产品系列，描述补充说明该物料能做什么。")
 

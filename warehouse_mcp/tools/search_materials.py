@@ -70,18 +70,59 @@ def search_materials(
         if not rows:
             return "没有找到匹配的物料。"
 
-        lines = []
-        for r in rows:
-            type_label = "耗材" if r["is_consumable"] else "非耗材"
-            loc = f" | 位置：{r['location']}" if r["location"] else ""
-            model_str = f" | 型号：{r['model']}" if r["model"] else ""
-            tags_str = f" | 标签：{r['tag_list']}" if r["tag_list"] else ""
-            lines.append(
-                f"[{r['id']}] {r['name']} | {r['category']} > {r['sub_category']}"
-                f"{model_str} | {type_label} | 库存：{r['quantity']}{loc}{tags_str}"
-            )
+        # 非耗材同名（+同型号+同分类）合并为一条、库存求和、不显示个体编号；
+        # 耗材本身即合并存储，保持独立条目。
+        non_cons = {}   # (name, category, sub_category, model) -> 合并信息
+        cons = []       # 耗材行
 
-        return f"共 {len(rows)} 条结果：\n" + "\n".join(lines)
+        for r in rows:
+            if r["is_consumable"]:
+                cons.append(r)
+            else:
+                key = (r["name"], r["category"], r["sub_category"], r["model"])
+                if key not in non_cons:
+                    non_cons[key] = {
+                        "name": r["name"], "category": r["category"],
+                        "sub_category": r["sub_category"], "model": r["model"],
+                        "quantity": 0, "location": r["location"] or "",
+                        "tags": set(),
+                    }
+                non_cons[key]["quantity"] += r["quantity"]
+                if r["location"]:
+                    non_cons[key]["location"] = r["location"]
+                if r["tag_list"]:
+                    non_cons[key]["tags"].update(r["tag_list"].split(", "))
+
+        # 统一按大类、名称排序输出
+        entries = []
+        for key, d in non_cons.items():
+            entries.append((d["category"], d["name"], 0, key))
+        for r in cons:
+            entries.append((r["category"], r["name"], 1, r))
+        entries.sort(key=lambda e: (e[0], e[1], e[2]))
+
+        lines = []
+        for _, _, kind, obj in entries:
+            if kind == 0:
+                d = non_cons[obj]
+                model_str = f" | 型号：{d['model']}" if d["model"] else ""
+                loc = f" | 位置：{d['location']}" if d["location"] else ""
+                tags_str = f" | 标签：{', '.join(sorted(d['tags']))}" if d["tags"] else ""
+                lines.append(
+                    f"{d['name']} | {d['category']} > {d['sub_category']}"
+                    f"{model_str} | 非耗材 | 库存：{d['quantity']}{loc}{tags_str}"
+                )
+            else:
+                r = obj
+                model_str = f" | 型号：{r['model']}" if r["model"] else ""
+                loc = f" | 位置：{r['location']}" if r["location"] else ""
+                tags_str = f" | 标签：{r['tag_list']}" if r["tag_list"] else ""
+                lines.append(
+                    f"[{r['id']}] {r['name']} | {r['category']} > {r['sub_category']}"
+                    f"{model_str} | 耗材 | 库存：{r['quantity']}{loc}{tags_str}"
+                )
+
+        return f"共 {len(lines)} 条结果：\n" + "\n".join(lines)
 
     finally:
         conn.close()

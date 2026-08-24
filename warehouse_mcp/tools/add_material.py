@@ -3,7 +3,8 @@
 
 from datetime import datetime
 from warehouse_mcp.db.database import (get_db, generate_id, CATEGORIES,
-                                        get_sub_code, get_category_subs)
+                                        get_sub_code, get_category_subs,
+                                        get_recommended_location)
 
 
 def add_material(
@@ -46,6 +47,10 @@ def add_material(
         return f"错误：无效的子类「{sub_category}」。有效子类：{'、'.join(valid_subs)}"
 
     sub_category_code = get_sub_code(category, sub_category) if sub_category else "OTH"
+
+    # 未指定位置时，按大类自动分配推荐存储位置（与智能入库保持一致）
+    if not location:
+        location = get_recommended_location(category)
 
     if tags is None:
         tags = []

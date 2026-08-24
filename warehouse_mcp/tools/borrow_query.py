@@ -49,8 +49,10 @@ def get_borrow_records(
         for r in rows:
             status_label = "借出中" if r["status"] == "active" else "已归还"
             returned = f" | 归还时间：{r['returned_at']}" if r["returned_at"] else ""
+            mat_label = (f"{r['material_name']}（{r['material_id']}）"
+                         if r["material_name"] else r["material_id"])
             lines.append(
-                f"[{r['id']}] {r['material_name'] or r['material_id']} "
+                f"[{r['id']}] {mat_label} "
                 f"| 借出人：{r['user_phone']} "
                 f"| 数量：{r['quantity']} 件 "
                 f"| 借出：{r['borrowed_at']} "

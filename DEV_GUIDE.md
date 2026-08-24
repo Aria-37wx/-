@@ -126,7 +126,7 @@ warehouse agent/
 │       └── app.py                  # Streamlit 界面（7 页面，AI 对话为核心）
 │
 ├── data/                           # SQLite 数据库文件存放
-│   └── warehouse.db                # 本地生成（不入库，见 .gitignore）
+│   └── warehouse.db                # 已提交测试数据（clone 后可直接使用）
 │
 ├── 选题4-物料管理智能体-方案文档.md   # 用户面向的业务文档
 ├── DEV_GUIDE.md                    # 本文件

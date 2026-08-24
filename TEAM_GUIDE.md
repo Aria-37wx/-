@@ -32,7 +32,7 @@ warehouse_mcp/
 ├── tools/
 │   ├── intent_router.py       ← 意图分类（classify_intent / classify_intent_fake）
 │   ├── smart_add_material.py  ← 入库推断（infer_material_info）
-│   └── project_recommend.py   ← 【待创建】项目需求→物料推荐
+│   └── recommend.py           ← 项目需求→物料推荐（已实现）
 ```
 
 ### 绝对不能改的文件（基础设施）
@@ -81,7 +81,7 @@ warehouse_mcp/
 | P0 | 完善离线规则 `infer_material_fake`，覆盖更多边缘物料 | `llm_client.py` |
 | P1 | 扩展搜索的同义词/语义匹配能力 | `intent_router.py`（`classify_intent`）|
 | P1 | 增强标签搜索的语义匹配 | `llm_client.py`（prompt 中提示 LLM 扩展关键词） |
-| P2 | 项目推荐：用户描述项目 → LLM 拆解物料清单 → 对照库存 | 新建 `tools/project_recommend.py` |
+| P2 | 项目推荐：用户描述项目 → LLM 拆解物料清单 → 对照库存 | `tools/recommend.py`（已完成） |
 
 ### 怎么做
 
@@ -91,7 +91,7 @@ warehouse_mcp/
 
 **增强意图路由**：在 `intent_router.py` 的 `classify_intent` 和 `classify_intent_fake` 中让 LLM 生成更丰富的搜索关键词。
 
-**新建项目推荐**：仿照 `intent_router.py` 的模式，在 `tools/project_recommend.py` 中实现两类函数：
+**项目推荐**（已在 `tools/recommend.py` 实现，LLM 版 + 离线版）：
 - LLM 版：调用 LLM，从项目描述生成物料清单
 - 离线版：内置几个常见项目模板（循迹小车、无人机、智能家居等）
 
@@ -119,7 +119,7 @@ Python: 3.12.13
 
 ### 测试数据
 
-运行 `setup_test_data.py` 可重置数据库并填充 95 条测试物料（覆盖全部 10 大类 50+ 子类、54 个标签）。
+仓库已提交测试数据库 `data/warehouse.db`（clone 后可直接使用，含 322 条物料、94 个标签，覆盖全部 10 大类 50+ 子类）。如需重置为初始测试数据，运行 `setup_test_data.py`：
 
 ```powershell
 & "C:\Anaconda\envs\py312\python.exe" setup_test_data.py
@@ -165,7 +165,7 @@ fix: 修复离线规则中红外传感器子类映射
 
 ### 不要提交
 
-- `data/` 目录下的数据库文件（已在 .gitignore）
+- `data/llm_config.json`（LLM API Key，已在 .gitignore）
 - `.env` 等密钥文件
 - `__pycache__/`
 
@@ -174,7 +174,7 @@ fix: 修复离线规则中红外传感器子类映射
 ## 六、代码规范
 
 1. 所有 `.py` 文件首行：`# -*- coding: utf-8 -*-`
-2. 文件名：小写+下划线（`project_recommend.py`）
+2. 文件名：小写+下划线（`recommend.py`）
 3. 函数注释用中文，说明输入输出
 4. 每个功能都写 **LLM 版本 + 离线规则版本**（模式参考 `intent_router.py`），确保不配 API Key 也能用
 5. 修改过的函数，保持原有参数签名不变（Web 页面依赖它们）

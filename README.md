@@ -24,7 +24,9 @@ pip install -r requirements.txt
 ### 启动 Web 服务
 
 ```powershell
-# 1. 初始化测试数据（首次运行）
+# 仓库已内置测试数据（data/warehouse.db），无需初始化，直接启动
+
+# 1. （可选）如需重置为演示测试数据，运行
 python setup_test_data.py
 
 # 2. 启动 Web 界面
@@ -105,7 +107,7 @@ warehouse agent/
 ├── DB_DESIGN.md                # 数据库设计文档
 ├── DEV_GUIDE.md                # 开发者指南
 ├── TEAM_GUIDE.md               # 团队合作指南
-└── data/                       # SQLite 数据库（不入库，本地跑 setup_test_data.py 生成）
+└── data/                       # SQLite 数据库（已提交测试数据，clone 后可直接使用）
 ```
 
 ---

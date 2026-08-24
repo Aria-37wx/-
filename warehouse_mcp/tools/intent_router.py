@@ -7,10 +7,31 @@ from warehouse_mcp.llm_client import _extract_json
 
 # ---- LLM 版本 ----
 
-def _build_intent_system_prompt() -> str:
+def _build_context_block(context: dict) -> str:
+    """多轮对话上下文说明（追加到 system prompt，让 LLM 判断细化/基于上下文出库/新话题）"""
+    req = context.get("requirement", "")
+    cnt = len(context.get("result_ids") or [])
+    return f"""
+
+## 当前对话上下文（非常重要）
+
+用户正在进行多轮对话。此前的需求是：「{req}」，系统已经筛选出 {cnt} 条相关物料。
+
+请判断用户这条新消息属于哪种情况：
+
+1. **细化（refine）**：用户是在给刚才的查询补充约束/条件（例如"要强光的""用于照明的""蓝色的""大功率的""只要国产的"）。此时：intent 填 "search"，设置 "refine": true，description 填用户补充的约束原文，keyword 填 ""。
+
+2. **基于上下文出库（from_context）**：用户想把刚才筛选出的结果直接出库（例如"出库""借这些""领用"）。此时：intent 填 "outbound"，设置 "from_context": true，keyword 填 ""。
+
+3. **全新请求**：用户换了一个新话题（例如从"发光元件"跳到"电机"）。此时按正常规则分类，不要设置 refine/from_context。
+
+无论哪种情况，输出 JSON 都要带 "refine" 和 "from_context" 两个布尔字段（默认为 false）。"""
+
+
+def _build_intent_system_prompt(context=None) -> str:
     """构建意图分类的 system prompt"""
     cat_names = "、".join(CATEGORIES.keys())
-    return f"""你是一个大学生科创实验室的物料管理助手。用户会用自然语言描述他的需求，你需要分析他的意图。
+    prompt = f"""你是一个大学生科创实验室的物料管理助手。用户会用自然语言描述他的需求，你需要分析他的意图。
 
 ## 可能的意图
 
@@ -77,14 +98,21 @@ def _build_intent_system_prompt() -> str:
 查询（不是推荐）: "想要 uno 板子" → intent="search", name="Arduino Uno", keyword="uno arduino 开发板"
 
 查询（不是推荐）: "有没有面包板" → intent="search", name="面包板", keyword="面包板" """
+    if context:
+        prompt += _build_context_block(context)
+    return prompt
 
 
-def classify_intent(user_input: str) -> dict:
+def classify_intent(user_input: str, context: dict = None) -> dict:
     """调用 LLM 分析用户意图（需要配置 API Key）。
+
+    Args:
+        user_input: 用户最新输入
+        context: 多轮对话上下文 dict（可选），含 requirement / result_ids 等
 
     Returns:
         dict: {"intent", "name", "description", "quantity", "user_phone",
-               "keyword", "confidence", "reasoning"}
+               "keyword", "confidence", "reasoning", "refine", "from_context"}
     """
     from warehouse_mcp.llm_client import _api_key, _base_url, _model, _get_openai
 
@@ -97,7 +125,7 @@ def classify_intent(user_input: str) -> dict:
     response = client.chat.completions.create(
         model=_model,
         messages=[
-            {"role": "system", "content": _build_intent_system_prompt()},
+            {"role": "system", "content": _build_intent_system_prompt(context)},
             {"role": "user", "content": user_input},
         ],
         temperature=0.1,
@@ -116,15 +144,17 @@ def classify_intent(user_input: str) -> dict:
     result.setdefault("keyword", "")
     result.setdefault("confidence", "low")
     result.setdefault("reasoning", "")
+    result.setdefault("refine", False)
+    result.setdefault("from_context", False)
     return result
 
 
 # ---- 离线规则版本 ----
 
-def classify_intent_fake(user_input: str) -> dict:
+def classify_intent_fake(user_input: str, context: dict = None) -> dict:
     """离线规则版意图分类（不调用 LLM，基于关键词匹配）。
 
-    覆盖常见场景，未覆盖的返回 unknown。
+    覆盖常见场景，未覆盖的返回 unknown。支持多轮上下文：细化（refine）、基于上下文出库（from_context）。
     """
     text = user_input.strip()
 
@@ -165,6 +195,39 @@ def classify_intent_fake(user_input: str) -> dict:
     recommend_words = ["做一个", "做个", "想做", "想搞", "搞一个", "搞个", "毕设", "大创",
                        "项目", "设计一个", "搭一个", "搭建", "制作", "diy",
                        "需要哪些物料", "物料清单", "需要什么", "怎么做", "整一个"]
+
+    # ---- 多轮上下文感知：存在活跃查询结果时，优先判断「基于上下文出库」和「细化」 ----
+    if context and context.get("result_ids"):
+        # 1. 基于上下文的出库指令（短指令，没引入新物料主语）
+        if _is_bare_outbound(text, outbound_words):
+            return {
+                "intent": "outbound",
+                "name": "",
+                "description": text,
+                "quantity": 1,
+                "user_phone": phone,
+                "keyword": "",
+                "confidence": "high",
+                "reasoning": "检测到基于上下文的出库指令",
+                "refine": False,
+                "from_context": True,
+            }
+        # 2. 细化（补充约束条件），且没有明显的新意图词
+        if _looks_like_refinement(
+            text, inbound_words, outbound_words, search_words, return_words, recommend_words
+        ):
+            return {
+                "intent": "search",
+                "name": "",
+                "description": text,
+                "quantity": 1,
+                "user_phone": phone,
+                "keyword": "",
+                "confidence": "medium",
+                "reasoning": "检测到对当前查询的细化描述",
+                "refine": True,
+                "from_context": False,
+            }
 
     inbound_score = sum(1 for w in inbound_words if w in text)
     outbound_score = sum(1 for w in outbound_words if w in text)
@@ -243,6 +306,8 @@ def classify_intent_fake(user_input: str) -> dict:
         "keyword": keyword or name,
         "confidence": "medium" if max_score >= 2 else "low",
         "reasoning": f"离线规则匹配到{max_intent}关键词（得分{max_score}）",
+        "refine": False,
+        "from_context": False,
     }
     return result
 
@@ -301,3 +366,37 @@ def _chinese_num_to_int(s: str) -> int:
         ones = mapping.get(parts[1], 0) if len(parts) > 1 and parts[1] else 0
         return tens + ones
     return 1
+
+
+def _is_bare_outbound(text: str, outbound_words: list) -> bool:
+    """判断是否是「基于上下文的裸出库指令」（如"出库""借这些""领用"，没引入新物料主语）。"""
+    t = text
+    for w in sorted(outbound_words, key=len, reverse=True):
+        t = t.replace(w, "")
+    # 去掉语气词 / 指示词 / 数量单位
+    for w in ["这些", "那些", "它们", "就", "吧", "的", "了", "一下", "物料", "东西",
+              "这个", "那个", "全部", "都", "全", "先", "直接", "麻烦", "帮我", "给我",
+              "请", "要", "想", "都给我"]:
+        t = t.replace(w, "")
+    t = re.sub(r'[\d一二三四五六七八九十百千万两]+', '', t)
+    t = re.sub(r'[个件台块根卷盒包张支条]', '', t)
+    t = t.strip().strip("，。？！?., ")
+    return t == ""
+
+
+def _looks_like_refinement(text: str, inbound_words, outbound_words, search_words,
+                           return_words, recommend_words) -> bool:
+    """判断是否是对当前查询的「细化」（补充约束，且没有明显新意图词）。"""
+    all_intent = inbound_words + outbound_words + search_words + return_words + recommend_words
+    if any(w in text for w in all_intent):
+        return False
+    refine_starts = ["要", "想要", "需要", "用于", "用作", "只要", "最好是", "得是",
+                     "是", "改成", "换成", "带", "要带", "能", "有", "带", "最好", "强"]
+    if any(text.startswith(w) for w in refine_starts):
+        return True
+    refine_contains = ["用于", "用作", "强光", "高亮", "大功率", "更亮", "功率",
+                       "亮度", "颜色", "蓝色", "红色", "白色", "绿色", "黄色",
+                       "只要", "或者", "还是", "防水", "耐高温", "低压", "高压"]
+    if any(w in text for w in refine_contains):
+        return True
+    return False

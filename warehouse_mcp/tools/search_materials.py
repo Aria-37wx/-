@@ -8,7 +8,8 @@ def search_material_rows(
     keyword: str = "",
     category: str = "",
     tag: str = "",
-    only_available: bool = False
+    only_available: bool = False,
+    ids: list = None,
 ) -> list:
     """查询库存物料，返回结构化行列表（不合并、不格式化文本）。
 
@@ -17,6 +18,7 @@ def search_material_rows(
         category: 按大类精确筛选（如 "主控板"）
         tag: 按标签搜索（匹配标签名或描述，可与 keyword 同时使用）
         only_available: 仅返回有库存的物料
+        ids: 仅返回指定 id 列表中的物料（多轮对话基于上下文出库时复用）
 
     Returns:
         每行 dict 含 id, name, category, category_code, sub_category,
@@ -67,6 +69,11 @@ def search_material_rows(
 
         if only_available:
             query += " AND m.quantity > 0"
+
+        if ids:
+            qmarks = ",".join("?" for _ in ids)
+            query += f" AND m.id IN ({qmarks})"
+            params.extend(ids)
 
         query += " GROUP BY m.id ORDER BY m.category, m.name"
 

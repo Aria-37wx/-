@@ -120,6 +120,8 @@ elif page == "AI 对话":
         st.session_state.ai_step = "input"
     if "ai_analysis" not in st.session_state:
         st.session_state.ai_analysis = None
+    if "ai_context" not in st.session_state:
+        st.session_state.ai_context = None
 
     # LLM 配置状态
     config = get_config_status()
@@ -208,8 +210,15 @@ elif page == "AI 对话":
     # Step: 执行查询
     elif st.session_state.ai_step == "exec_search" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
-        keyword = analysis.get("keyword", "") or analysis.get("name", "")
-        query = analysis.get("user_input") or keyword
+        ctx = st.session_state.ai_context
+
+        # 多轮细化：用累积需求做语义过滤，keyword 保持原始召回关键词（保证召回广度）
+        if ctx and ctx.get("requirement"):
+            requirement = ctx["requirement"]
+            keyword = ctx.get("keyword") or analysis.get("keyword", "") or analysis.get("name", "")
+        else:
+            keyword = analysis.get("keyword", "") or analysis.get("name", "")
+            requirement = analysis.get("user_input") or keyword
 
         # 结构化搜索（名称/类别/型号 + 标签）按 id 去重
         cands = {}
@@ -223,9 +232,16 @@ elif page == "AI 对话":
             else:
                 with st.spinner("AI 正在筛选匹配结果..."):
                     use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
-                    filt = filter_search_results(query, cands, use_fake=use_fake, keyword=keyword)
+                    filt = filter_search_results(requirement, cands, use_fake=use_fake, keyword=keyword)
                 keep_ids = set(filt["keep_ids"])
                 kept = [m for m in cands if m["id"] in keep_ids]
+
+                # 记录上下文，供后续「细化 / 出库」接力
+                st.session_state.ai_context = {
+                    "requirement": requirement,
+                    "keyword": keyword,
+                    "result_ids": [m["id"] for m in kept],
+                }
 
                 if filt.get("summary"):
                     st.caption(f"AI 筛选：{filt['summary']}")
@@ -259,31 +275,53 @@ elif page == "AI 对话":
     # Step: 出库 — 搜索物料列表（批量）
     elif st.session_state.ai_step == "exec_outbound_list" and st.session_state.ai_analysis:
         analysis = st.session_state.ai_analysis
-        keyword = analysis.get("keyword", "") or analysis.get("name", "")
-        query = analysis.get("user_input") or keyword
+        from_ctx = bool(analysis.get("from_context"))
+        ctx = st.session_state.ai_context
 
-        # 复用结构化搜索：名称/类别/型号 + 标签，按 id 去重
-        matched = {}
-        for r in search_material_rows(keyword=keyword, only_available=True) + \
-                search_material_rows(tag=keyword, only_available=True):
-            matched[r["id"]] = r
-        cands = list(matched.values())
+        cands = []
+        keep_ids = set()
+        if from_ctx and ctx and ctx.get("result_ids"):
+            # 基于上下文出库：直接用上一轮筛选出的结果
+            rows = search_material_rows(ids=ctx["result_ids"], only_available=True)
+            items = _group_search_rows(rows)
+            keyword = ctx.get("requirement") or ctx.get("keyword") or "刚才筛选的结果"
+            summary = ""
+        else:
+            keyword = analysis.get("keyword", "") or analysis.get("name", "")
+            query = analysis.get("user_input") or keyword
 
-        # 智能筛选（同一 query 缓存，避免每次交互重复调用 LLM）
-        if st.session_state.get("ai_outbound_query") != query:
-            use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
-            filt = filter_search_results(query, cands, use_fake=use_fake, keyword=keyword)
-            st.session_state.ai_outbound_query = query
-            st.session_state.ai_outbound_keep_ids = set(filt["keep_ids"])
-            st.session_state.ai_outbound_summary = filt.get("summary", "")
-        keep_ids = st.session_state.get("ai_outbound_keep_ids", set())
+            # 复用结构化搜索：名称/类别/型号 + 标签，按 id 去重
+            matched = {}
+            for r in search_material_rows(keyword=keyword, only_available=True) + \
+                    search_material_rows(tag=keyword, only_available=True):
+                matched[r["id"]] = r
+            cands = list(matched.values())
 
-        # 同名非耗材合并、耗材独立，得到可批量出库的条目
-        items = _group_search_rows([m for m in cands if m["id"] in keep_ids])
+            # 智能筛选（同一 query 缓存，避免每次交互重复调用 LLM）
+            if st.session_state.get("ai_outbound_query") != query:
+                use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
+                filt = filter_search_results(query, cands, use_fake=use_fake, keyword=keyword)
+                st.session_state.ai_outbound_query = query
+                st.session_state.ai_outbound_keep_ids = set(filt["keep_ids"])
+                st.session_state.ai_outbound_summary = filt.get("summary", "")
+            keep_ids = st.session_state.get("ai_outbound_keep_ids", set())
+
+            # 同名非耗材合并、耗材独立，得到可批量出库的条目
+            items = _group_search_rows([m for m in cands if m["id"] in keep_ids])
+            summary = st.session_state.get("ai_outbound_summary", "")
+
+            # 记录上下文，供后续「细化 / 出库」接力
+            st.session_state.ai_context = {
+                "requirement": query,
+                "keyword": keyword,
+                "result_ids": [m["id"] for m in cands if m["id"] in keep_ids],
+            }
 
         if not items:
             with st.chat_message("assistant"):
-                if cands and not keep_ids:
+                if from_ctx:
+                    st.warning("刚才筛选的结果里没有可出库的物料（可能已无库存），请重新查询。")
+                elif cands and not keep_ids:
                     st.warning(f"找到了「{keyword}」相关词条，但经 AI 判断都不符合你的意图。试试更具体地描述？")
                 else:
                     st.warning(f"未找到与「{keyword}」匹配的可出库物料，请检查库存或换个说法。")
@@ -293,9 +331,12 @@ elif page == "AI 对话":
                 st.rerun()
         else:
             with st.chat_message("assistant"):
-                if st.session_state.get("ai_outbound_summary"):
-                    st.caption(f"AI 筛选：{st.session_state.ai_outbound_summary}")
-                st.markdown(f"找到 **{len(items)}** 类与「{keyword}」匹配的物料，可批量选择：")
+                if summary:
+                    st.caption(f"AI 筛选：{summary}")
+                if from_ctx:
+                    st.markdown(f"基于刚才筛选的结果，找到 **{len(items)}** 类可出库物料：")
+                else:
+                    st.markdown(f"找到 **{len(items)}** 类与「{keyword}」匹配的物料，可批量选择：")
 
             options = {}
             for idx, it in enumerate(items):
@@ -360,12 +401,14 @@ elif page == "AI 对话":
                     )
                     st.session_state.ai_step = "input"
                     st.session_state.ai_analysis = None
+                    st.session_state.ai_context = None
                     st.toast("批量出库完成", icon=":material/check:")
                     st.rerun()
 
             if st.button("取消"):
                 st.session_state.ai_step = "input"
                 st.session_state.ai_analysis = None
+                st.session_state.ai_context = None
                 st.rerun()
 
     # Step: 执行项目推荐
@@ -518,21 +561,57 @@ elif page == "AI 对话":
     if user_input:
         st.session_state.ai_messages.append({"role": "user", "content": user_input})
 
+        context = st.session_state.ai_context
+        # 仅在存在有效筛选结果时才把上下文传给分类器（空结果视为无上下文）
+        if not (context and context.get("result_ids")):
+            context = None
         with st.spinner("AI 正在分析..."):
             use_fake = st.session_state.get("use_fake_ai", False) or not config["has_key"]
             try:
                 if use_fake:
-                    analysis = classify_intent_fake(user_input)
+                    analysis = classify_intent_fake(user_input, context=context)
                 else:
-                    analysis = classify_intent(user_input)
+                    analysis = classify_intent(user_input, context=context)
             except Exception as e:
-                analysis = classify_intent_fake(user_input)
+                analysis = classify_intent_fake(user_input, context=context)
                 if "未配置" not in str(e):
                     analysis["reasoning"] = f"(LLM 调用失败，已降级为离线规则: {e})"
 
-        # 添加 AI 回复到消息
         intent = analysis.get("intent", "unknown")
         name = analysis.get("name", "")
+        refine = bool(analysis.get("refine"))
+        from_context = bool(analysis.get("from_context"))
+
+        # 多轮细化：累积需求后回到查询步骤重新筛选
+        if refine:
+            ctx = st.session_state.ai_context or {"requirement": "", "keyword": "", "result_ids": []}
+            ctx["requirement"] = (ctx.get("requirement", "") + " " + user_input).strip()
+            st.session_state.ai_context = ctx
+            analysis["user_input"] = user_input
+            st.session_state.ai_analysis = analysis
+            st.session_state.ai_messages.append(
+                {"role": "assistant",
+                 "content": f"好的，我在刚才的结果上进一步筛选：{user_input}"}
+            )
+            st.session_state.ai_step = "exec_search"
+            st.rerun()
+
+        # 基于上下文出库
+        if from_context:
+            analysis["user_input"] = user_input
+            st.session_state.ai_analysis = analysis
+            st.session_state.ai_messages.append(
+                {"role": "assistant",
+                 "content": "好的，我在刚才筛选出的结果上为你办理出库。"}
+            )
+            st.session_state.ai_step = "exec_outbound_list"
+            st.rerun()
+
+        # 全新意图：重置上下文（unknown 保留上下文，便于用户继续细化/出库）
+        if intent != "unknown":
+            st.session_state.ai_context = None
+
+        # 添加 AI 回复到消息
         if intent == "unknown":
             ai_content = "抱歉，我没太理解你的意图。能换个说法试试吗？"
         elif intent == "inbound":

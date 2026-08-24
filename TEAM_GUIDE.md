@@ -119,7 +119,7 @@ Python: 3.12.13
 
 ### 测试数据
 
-仓库已提交测试数据库 `data/warehouse.db`（clone 后可直接使用，含 322 条物料、94 个标签，覆盖全部 10 大类 50+ 子类）。如需重置为初始测试数据，运行 `setup_test_data.py`：
+仓库已提交测试数据库 `data/warehouse.db`（clone 后可直接使用，含 541 条物料、126 个标签，覆盖全部 10 大类 50+ 子类）。如需重置为初始测试数据，运行 `setup_test_data.py`：
 
 ```powershell
 & "C:\Anaconda\envs\py312\python.exe" setup_test_data.py

@@ -6,6 +6,27 @@
 
 ---
 
+## 如何打开系统
+
+### 方式一：一键启动（推荐，Windows）
+
+1. 安装 [Python 3.12+](https://www.python.org/downloads/)（安装时勾选 **Add python.exe to PATH**）
+2. 双击仓库根目录的 `启动Web服务.bat`，首次运行会自动安装依赖，稍等片刻
+3. 浏览器打开 http://localhost:8501
+
+### 方式二：命令行启动
+
+```powershell
+pip install -r requirements.txt
+streamlit run warehouse_mcp/web/app.py --server.port 8501
+```
+
+浏览器打开 http://localhost:8501
+
+> 仓库已内置测试数据（`data/warehouse.db`），无需初始化，直接启动即可使用。
+
+---
+
 ## 快速开始
 
 ### 环境
